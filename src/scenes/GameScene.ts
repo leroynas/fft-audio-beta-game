@@ -42,6 +42,7 @@ const PROPS: PropConfig[] = [
 const EXTRA_PROPS: PropConfig[] = [
     { x: 1200, y: 760, type: 'building', label: 'Main-House'},
     { x: 1200, y: 1200, type: 'plant', label: 'Vinyl Vine'},
+    { x: 1300, y: 1200, type: 'plant', label: 'Vinyl Vine2'},
 ];
 
 /** Distance (px) the player must walk before the next footstep fires */
