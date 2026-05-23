@@ -32,12 +32,16 @@ const FLOOR_ZONES: FloorZone[] = [
     { x: 1600, y: 0, width: 800,  height: WORLD_H, type: 'stone',  color: 0x555555 },
 ];
 
-/** Five interactive props spread across the world */
+/** Four interactive props spread across the world */
 const PROPS: PropConfig[] = [
     { x: 650,  y: 800, type: 'door',   label: 'Old Door' },
     { x: 1200, y: 500,  type: 'keys',   label: 'Metal Keys' },
-    { x: 1200, y: 1100, type: 'barrel', label: 'Barrel' },
+    { x: 1400, y: 760, type: 'barrel', label: 'Barrel' },
     { x: 1800, y: 800,  type: 'cloth',  label: 'Cloth Hanging' },
+];
+const EXTRA_PROPS: PropConfig[] = [
+    { x: 1200, y: 760, type: 'building', label: 'Main-House'},
+    { x: 1200, y: 1200, type: 'plant', label: 'Vinyl Vine'},
 ];
 
 /** Distance (px) the player must walk before the next footstep fires */
@@ -82,6 +86,12 @@ export class GameScene extends Phaser.Scene {
         this.load.image('tile-wood',   '/assets/tiles/wood.jpeg');
         this.load.image('tile-gravel', '/assets/tiles/gravel.jpeg');
         this.load.image('tile-stone',  '/assets/tiles/stone.jpeg');
+
+        this.load.image('object-house', '/assets/objects/Main_House.png');
+        this.load.image('plant', '/assets/sprites/plants/vinyl_vine/VinylVine_01_Seed.png');
+        this.load.image('plant_stage2', '/assets/sprites/plants/vinyl_vine/VinylVine_02.Sprout.png');
+        this.load.image('plant_stage3', '/assets/sprites/plants/vinyl_vine/VinylVine_03.Growing.png');
+        this.load.image('plant_stage4', '/assets/sprites/plants/vinyl_vine/VinylVine_04.Mature.png');
     }
 
     // ── Create ────────────────────────────────────────────────
@@ -97,13 +107,22 @@ export class GameScene extends Phaser.Scene {
         this.drawGrid();
 
         // --- Create props ---
-        for (const cfg of PROPS) {
+        for (const cfg of [ ...PROPS, ...EXTRA_PROPS ]) {
             const prop = new Prop(this, cfg.x, cfg.y, cfg.type, cfg.label);
             this.props.push(prop);
         }
 
         // --- Create player at center of the world ---
         this.player = new Player(this, WORLD_W / 2, WORLD_H / 2);
+
+        for (const prop of this.props) {
+           if (prop.collider) {
+                this.physics.add.collider(
+                    this.player.sprite,
+                    prop.collider
+                );
+            }
+        }
 
         // --- Camera: follow player, clamp to world ---
         this.cameras.main.startFollow(this.player.sprite, true, 0.08, 0.08);
@@ -115,6 +134,11 @@ export class GameScene extends Phaser.Scene {
         // Wire up prop interaction sounds
         for (const prop of this.props) {
             prop.onInteract = () => {
+                if (prop.type === 'building')
+                    this.audioManager.playPropInteract('door');
+                if (prop.type === 'plant')
+                    this.audioManager.playPropInteract('keys');
+
                 this.audioManager.playPropInteract(prop.type);
             };
         }
@@ -186,6 +210,10 @@ export class GameScene extends Phaser.Scene {
             this.audioManager.getMixerSnapshot(),
             this.audioManager.seed
         );
+
+        for (const prop of this.props) {
+            prop.update(delta);
+        }
     }
 
     // ── World drawing helpers ─────────────────────────────────

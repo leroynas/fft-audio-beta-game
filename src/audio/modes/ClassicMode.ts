@@ -44,6 +44,12 @@ const PROP_SAMPLES: Record<PropType, string[]> = {
     door: [
         '/assets/audio/props/door_01.mp3',
     ],
+    building: [
+        '/assets/audio/props/door_01.mp3',  // reuse door sound for building interaction
+    ],
+    plant: [
+        '/assets/audio/props/keys_01.mp3',
+    ],
 };
 
 /** Maximum pitch offset in semitones (±) */

@@ -6,7 +6,7 @@
 export type FloorType = 'wood' | 'gravel' | 'stone';
 
 /** Identifiers for interactive props */
-export type PropType = 'keys' | 'cloth' | 'barrel' | 'door';
+export type PropType = 'keys' | 'cloth' | 'barrel' | 'door' | 'building' | 'plant';
 
 /** Audio mode identifiers — 'live' is reserved for Phase 3 */
 export type AudioMode = 'classic' | 'live';
