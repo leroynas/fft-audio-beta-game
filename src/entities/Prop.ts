@@ -56,8 +56,11 @@ export class Prop {
         // ---------------------------------------------------
         if (type === 'plant') {
             this.plantImage = scene.add.image(0, 0, 'plant');
-
+            //----
+            // sprite size plant change!!!!
             this.plantImage.setScale(0.05);
+            //----
+
             this.plantImage.setOrigin(0.5, 1);
 
             children.push(this.plantImage);
@@ -249,18 +252,24 @@ export class Prop {
     if (this.plantStage === 1 && this.growthTimer > 5000) {
         this.plantStage = 2;
         this.plantImage.setTexture('plant_stage2');
+        // Add audio cue for plant growth
+        // this.scene.sound.play('plant_growth'); //Unsure solution
     }
 
     // Stage 2 → Stage 3 after 10 seconds
     if (this.plantStage === 2 && this.growthTimer > 10000) {
         this.plantStage = 3;
         this.plantImage.setTexture('plant_stage3');
+        // Add audio cue for plant growth
+        // this.scene.sound.play('plant_growth'); //Unsure solution
     }
 
     // Stage 3 → Stage 4 after 15 seconds
     if (this.plantStage === 3 && this.growthTimer > 15000) {
         this.plantStage = 4;
         this.plantImage.setTexture('plant_stage4');
+        // Add audio cue for plant growth
+        // this.scene.sound.play('plant_growth'); //Unsure solution
     }
 }
 }

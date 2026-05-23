@@ -48,7 +48,7 @@ const PROP_SAMPLES: Record<PropType, string[]> = {
         '/assets/audio/props/door_01.mp3',  // reuse door sound for building interaction
     ],
     plant: [
-        '/assets/audio/props/keys_01.mp3',
+        '/assets/audio/props/keys_01.mp3', // plant audio soundtrack harvested
     ],
 };
 

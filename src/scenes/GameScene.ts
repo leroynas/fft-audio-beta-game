@@ -212,6 +212,8 @@ export class GameScene extends Phaser.Scene {
             this.audioManager.seed
         );
 
+        // Update props (for things like the plant growth animation)
+        // update is in second but needs the frameupdate to be triggerd
         for (const prop of this.props) {
             prop.update(delta);
         }
