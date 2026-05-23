@@ -89,9 +89,9 @@ export class GameScene extends Phaser.Scene {
 
         this.load.image('object-house', '/assets/objects/Main_House.png');
         this.load.image('plant', '/assets/sprites/plants/vinyl_vine/VinylVine_01_Seed.png');
-        this.load.image('plant_stage2', '/assets/sprites/plants/vinyl_vine/VinylVine_02.Sprout.png');
-        this.load.image('plant_stage3', '/assets/sprites/plants/vinyl_vine/VinylVine_03.Growing.png');
-        this.load.image('plant_stage4', '/assets/sprites/plants/vinyl_vine/VinylVine_04.Mature.png');
+        this.load.image('plant_stage2', '/assets/sprites/plants/vinyl_vine/VinylVine_02_Sprout.png');
+        this.load.image('plant_stage3', '/assets/sprites/plants/vinyl_vine/VinylVine_03_Growing.png');
+        this.load.image('plant_stage4', '/assets/sprites/plants/vinyl_vine/VinylVine_04_Mature.png');
     }
 
     // ── Create ────────────────────────────────────────────────

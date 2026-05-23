@@ -57,7 +57,7 @@ export class Prop {
         if (type === 'plant') {
             this.plantImage = scene.add.image(0, 0, 'plant');
 
-            this.plantImage.setScale(0.5);
+            this.plantImage.setScale(0.05);
             this.plantImage.setOrigin(0.5, 1);
 
             children.push(this.plantImage);
@@ -251,10 +251,16 @@ export class Prop {
         this.plantImage.setTexture('plant_stage2');
     }
 
-    // Optional: Stage 2 → Stage 3 later
-    // if (this.plantStage === 2 && this.growthTimer > 10000) {
-    //     this.plantStage = 3;
-    //     this.plantImage.setTexture('plant_stage3');
-    // }
+    // Stage 2 → Stage 3 after 10 seconds
+    if (this.plantStage === 2 && this.growthTimer > 10000) {
+        this.plantStage = 3;
+        this.plantImage.setTexture('plant_stage3');
+    }
+
+    // Stage 3 → Stage 4 after 15 seconds
+    if (this.plantStage === 3 && this.growthTimer > 15000) {
+        this.plantStage = 4;
+        this.plantImage.setTexture('plant_stage4');
+    }
 }
 }
