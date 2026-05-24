@@ -263,24 +263,37 @@ export class Prop {
         if (this.type !== 'plant') return;
         if (!this.plantImage) return;
 
+        // When GameScene is switched/restarted, Phaser destroys this image.
+        // Old Prop objects can briefly still receive an update during the same
+        // frame, so never call setTexture on an orphaned/destroyed Image.
+        if (!this.plantImage.scene || !this.scene.sys || !this.scene.sys.textures) return;
+
         this.growthTimer += delta;
 
-        // Stage 1 → Stage 2 after 5 seconds
         if (this.plantStage === 1 && this.growthTimer > 5000) {
-            this.plantStage = 2;
-            this.plantImage.setTexture(this.getPlantTextureKey(2));
+            this.setPlantStage(2);
         }
 
-        // Stage 2 → Stage 3 after 10 seconds
         if (this.plantStage === 2 && this.growthTimer > 10000) {
-            this.plantStage = 3;
-            this.plantImage.setTexture(this.getPlantTextureKey(3));
+            this.setPlantStage(3);
         }
 
-        // Stage 3 → Stage 4 after 15 seconds
         if (this.plantStage === 3 && this.growthTimer > 15000) {
-            this.plantStage = 4;
-            this.plantImage.setTexture(this.getPlantTextureKey(4));
+            this.setPlantStage(4);
         }
+    }
+
+    private setPlantStage(stage: 2 | 3 | 4): void {
+        if (!this.plantImage) return;
+
+        const textureKey = this.getPlantTextureKey(stage);
+
+        if (!this.scene.textures.exists(textureKey)) {
+            console.warn(`[Prop] Missing plant texture: ${textureKey}`);
+            return;
+        }
+
+        this.plantStage = stage;
+        this.plantImage.setTexture(textureKey);
     }
 }

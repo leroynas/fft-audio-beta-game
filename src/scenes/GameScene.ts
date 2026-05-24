@@ -90,6 +90,7 @@ export class GameScene extends Phaser.Scene {
     private keyM!: Phaser.Input.Keyboard.Key;
     private keyR!: Phaser.Input.Keyboard.Key;
     private audioUnlocked = false;
+    private isChangingScene = false;
 
     constructor() {
         super({ key: 'GameScene' });
@@ -115,10 +116,9 @@ export class GameScene extends Phaser.Scene {
         });
 
         // Floor tile textures
-        this.load.image('tile-wood',   '/assets/tiles/wood.jpeg');
-        this.load.image('tile-gravel', '/assets/tiles/gravel.jpeg');
-        this.load.image('tile-stone',  '/assets/tiles/stone.jpeg');
-
+        this.load.image('tile-wood',   '/assets/tiles/wood.jpg');
+        this.load.image('tile-gravel', '/assets/tiles/gravel.jpg');
+        this.load.image('tile-stone',  '/assets/tiles/stone.jpg');
         this.load.image('object-house', '/assets/objects/Main_House.png');
         this.load.image('object-store', '/assets/objects/Store_Building.png');
 
@@ -152,6 +152,12 @@ export class GameScene extends Phaser.Scene {
     // ── Create ────────────────────────────────────────────────
 
     create(): void {
+        // Reset scene-local state. Phaser reuses the same Scene instance when
+        // returning from HouseScene/StoreScene, so old props must not remain
+        // in this array after their GameObjects have been destroyed.
+        this.props = [];
+        this.isChangingScene = false;
+
         // --- Physics world bounds ---
         this.physics.world.setBounds(0, 0, WORLD_W, WORLD_H);
 
@@ -202,6 +208,7 @@ export class GameScene extends Phaser.Scene {
                     this.audioManager.playPropInteract('door');
 
                     if (prop.targetScene) {
+                        this.isChangingScene = true;
                         this.scene.start(prop.targetScene);
                     }
 
@@ -232,6 +239,8 @@ export class GameScene extends Phaser.Scene {
     // ── Update (every frame) ─────────────────────────────────
 
     update(_time: number, delta: number): void {
+        if (this.isChangingScene) return;
+
         // Player movement + floor detection
         this.player.update(FLOOR_ZONES);
 
@@ -256,6 +265,7 @@ export class GameScene extends Phaser.Scene {
 
             if (inRange && Phaser.Input.Keyboard.JustDown(this.keyE)) {
                 prop.interact();
+                if (this.isChangingScene) return;
                 break;
             }
         }
