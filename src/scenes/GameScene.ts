@@ -14,7 +14,7 @@ import { Player } from '../entities/Player';
 import { Prop } from '../entities/Prop';
 import { AudioManager } from '../audio/AudioManager';
 import { UI } from '../utils/UI';
-import { FloorZone, PropConfig } from '../types';
+import { FloorZone, PlantVariant, PropConfig } from '../types';
 
 // ── World configuration ──────────────────────────────────────
 
@@ -32,6 +32,17 @@ const FLOOR_ZONES: FloorZone[] = [
     { x: 1600, y: 0, width: 800,  height: WORLD_H, type: 'stone',  color: 0x555555 },
 ];
 
+/** Every plant visual added under public/assets/sprites/Plants/plants. */
+const PLANT_ASSETS: Record<PlantVariant, { folder: string; filePrefix: string }> = {
+    beat_beet:         { folder: 'Beat_Beet',         filePrefix: 'Beatbeet' },
+    crescendo_carrot:  { folder: 'Crescendo_Carrot',  filePrefix: 'CrescendoCarrot' },
+    echo_eggplant:     { folder: 'Echo_Eggplant',     filePrefix: 'EchoEggplant' },
+    melody_melon:      { folder: 'Melody_Melon',      filePrefix: 'MelodyMelon' },
+    rhythm_radish:     { folder: 'Rhythm_Radish',     filePrefix: 'RhythmRadish' },
+    treble_turnip:     { folder: 'Treble_Turnip',     filePrefix: 'TrebleTurnip' },
+    vinyl_vine:        { folder: 'Vinyl_Vine',        filePrefix: 'VinylVine' },
+};
+
 /** Four interactive props spread across the world */
 const PROPS: PropConfig[] = [
     { x: 650,  y: 800, type: 'door',   label: 'Old Door' },
@@ -40,9 +51,29 @@ const PROPS: PropConfig[] = [
     { x: 1800, y: 800,  type: 'cloth',  label: 'Cloth Hanging' },
 ];
 const EXTRA_PROPS: PropConfig[] = [
-    { x: 1200, y: 760, type: 'building', label: 'Main-House'},
-    { x: 1200, y: 1200, type: 'plant', label: 'Vinyl Vine'},
-    { x: 1300, y: 1200, type: 'plant', label: 'Vinyl Vine2'},
+    {
+        x: 1200,
+        y: 760,
+        type: 'building',
+        label: 'House',
+        buildingVariant: 'house',
+        targetScene: 'HouseScene',
+    },
+    {
+        x: 2050,
+        y: 800,
+        type: 'building',
+        label: 'Store',
+        buildingVariant: 'store',
+        targetScene: 'StoreScene',
+    },
+    { x: 720,  y: 1220, type: 'plant',    label: 'Beat Beet',        plantVariant: 'beat_beet' },
+    { x: 880,  y: 1220, type: 'plant',    label: 'Crescendo Carrot', plantVariant: 'crescendo_carrot' },
+    { x: 1040, y: 1220, type: 'plant',    label: 'Echo Eggplant',    plantVariant: 'echo_eggplant' },
+    { x: 1200, y: 1220, type: 'plant',    label: 'Melody Melon',     plantVariant: 'melody_melon' },
+    { x: 1360, y: 1220, type: 'plant',    label: 'Rhythm Radish',    plantVariant: 'rhythm_radish' },
+    { x: 1520, y: 1220, type: 'plant',    label: 'Treble Turnip',    plantVariant: 'treble_turnip' },
+    { x: 1680, y: 1220, type: 'plant',    label: 'Vinyl Vine',       plantVariant: 'vinyl_vine' },
 ];
 
 /** Distance (px) the player must walk before the next footstep fires */
@@ -89,10 +120,33 @@ export class GameScene extends Phaser.Scene {
         this.load.image('tile-stone',  '/assets/tiles/stone.jpeg');
 
         this.load.image('object-house', '/assets/objects/Main_House.png');
-        this.load.image('plant', '/assets/sprites/plants/vinyl_vine/VinylVine_01_Seed.png');
-        this.load.image('plant_stage2', '/assets/sprites/plants/vinyl_vine/VinylVine_02_Sprout.png');
-        this.load.image('plant_stage3', '/assets/sprites/plants/vinyl_vine/VinylVine_03_Growing.png');
-        this.load.image('plant_stage4', '/assets/sprites/plants/vinyl_vine/VinylVine_04_Mature.png');
+        this.load.image('object-store', '/assets/objects/Store_Building.png');
+
+        for (const [plantVariant, asset] of Object.entries(PLANT_ASSETS) as [PlantVariant, { folder: string; filePrefix: string }][]) {
+            this.load.image(
+                `${plantVariant}_stage1`,
+                `/assets/sprites/Plants/plants/${asset.folder}/${asset.filePrefix}_01_Seed.png`
+            );
+            this.load.image(
+                `${plantVariant}_stage2`,
+                `/assets/sprites/Plants/plants/${asset.folder}/${asset.filePrefix}_02_Sprout.png`
+            );
+            this.load.image(
+                `${plantVariant}_stage3`,
+                `/assets/sprites/Plants/plants/${asset.folder}/${asset.filePrefix}_03_Growing.png`
+            );
+            this.load.image(
+                `${plantVariant}_stage4`,
+                `/assets/sprites/Plants/plants/${asset.folder}/${asset.filePrefix}_04_Mature.png`
+            );
+        }
+
+        // Backward-compatible default keys. Existing code that still asks for
+        // plant_stage1, plant_stage2, etc. will use Vinyl Vine.
+        this.load.image('plant_stage1', '/assets/sprites/Plants/plants/Vinyl_Vine/VinylVine_01_Seed.png');
+        this.load.image('plant_stage2', '/assets/sprites/Plants/plants/Vinyl_Vine/VinylVine_02_Sprout.png');
+        this.load.image('plant_stage3', '/assets/sprites/Plants/plants/Vinyl_Vine/VinylVine_03_Growing.png');
+        this.load.image('plant_stage4', '/assets/sprites/Plants/plants/Vinyl_Vine/VinylVine_04_Mature.png');
     }
 
     // ── Create ────────────────────────────────────────────────
@@ -109,7 +163,16 @@ export class GameScene extends Phaser.Scene {
 
         // --- Create props ---
         for (const cfg of [ ...PROPS, ...EXTRA_PROPS ]) {
-            const prop = new Prop(this, cfg.x, cfg.y, cfg.type, cfg.label);
+            const prop = new Prop(
+                this,
+                cfg.x,
+                cfg.y,
+                cfg.type,
+                cfg.label,
+                cfg.plantVariant,
+                cfg.buildingVariant,
+                cfg.targetScene
+            );
             this.props.push(prop);
         }
 
@@ -135,10 +198,19 @@ export class GameScene extends Phaser.Scene {
         // Wire up prop interaction sounds
         for (const prop of this.props) {
             prop.onInteract = () => {
-                if (prop.type === 'building')
+                if (prop.type === 'building') {
                     this.audioManager.playPropInteract('door');
-                if (prop.type === 'plant')
+
+                    if (prop.targetScene) {
+                        this.scene.start(prop.targetScene);
+                    }
+
+                    return;
+                }
+
+                if (prop.type === 'plant') {
                     this.audioManager.playPropInteract('keys');
+                }
 
                 this.audioManager.playPropInteract(prop.type);
             };
@@ -184,6 +256,7 @@ export class GameScene extends Phaser.Scene {
 
             if (inRange && Phaser.Input.Keyboard.JustDown(this.keyE)) {
                 prop.interact();
+                break;
             }
         }
 

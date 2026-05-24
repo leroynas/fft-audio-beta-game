@@ -36,10 +36,12 @@ const FOOTSTEP_LOOPS: Record<FloorType, string> = {
 };
 
 const PROP_LOOPS: Record<PropType, string> = {
-    keys:   '/assets/audio/long_loops/keys_long.mp3',
-    cloth:  '/assets/audio/long_loops/cloth_long.mp3',
-    barrel: '/assets/audio/long_loops/barrel_long.mp3',
-    door:   '/assets/audio/long_loops/door_long.mp3',
+    keys:     '/assets/audio/long_loops/keys_long.mp3',
+    cloth:    '/assets/audio/long_loops/cloth_long.mp3',
+    barrel:   '/assets/audio/long_loops/barrel_long.mp3',
+    door:     '/assets/audio/long_loops/door_long.mp3',
+    building: '/assets/audio/long_loops/door_long.mp3',
+    plant:    '/assets/audio/long_loops/keys_long.mp3',
 };
 
 // ── Gain compensation ────────────────────────────────────────

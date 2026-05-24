@@ -5,7 +5,7 @@
  * interaction when the player presses E.
  */
 import Phaser from 'phaser';
-import { PropType } from '../types';
+import { BuildingVariant, EnterableSceneKey, PlantVariant, PropType } from '../types';
 
 /** Prop visual color mapping (fallbacks for primitive props) */
 const PROP_COLORS: Record<string, number> = {
@@ -16,18 +16,25 @@ const PROP_COLORS: Record<string, number> = {
     building: 0xffffff,
 };
 
+const BUILDING_TEXTURE_KEYS: Record<BuildingVariant, string> = {
+    house: 'object-house',
+    store: 'object-store',
+};
+
 /** Default interaction radius */
 const DEFAULT_INTERACT_RADIUS = 60;
-const BUILDING_INTERACT_RADIUS = 180;
 
 export class Prop {
     public type: PropType;
     public sprite: Phaser.GameObjects.Container;
     public label: string;
     public collider?: Phaser.GameObjects.Rectangle;
+    public targetScene?: EnterableSceneKey;
     private interactionPoint?: Phaser.Math.Vector2;
     private plantStage = 1; // For plant growth stages (1-4)
     private plantImage?: Phaser.GameObjects.Image;
+    private plantVariant: PlantVariant = 'vinyl_vine';
+    private buildingVariant: BuildingVariant = 'house';
     private growthTimer = 0;
 
     /** Callback fired on interaction */
@@ -43,11 +50,17 @@ export class Prop {
         x: number,
         y: number,
         type: PropType,
-        label: string
+        label: string,
+        plantVariant: PlantVariant = 'vinyl_vine',
+        buildingVariant: BuildingVariant = 'house',
+        targetScene?: EnterableSceneKey
     ) {
         this.scene = scene;
         this.type = type;
         this.label = label;
+        this.plantVariant = plantVariant;
+        this.buildingVariant = buildingVariant;
+        this.targetScene = targetScene;
 
         const children: Phaser.GameObjects.GameObject[] = [];
 
@@ -55,10 +68,10 @@ export class Prop {
         // BUILDING PROP (uses real image)
         // ---------------------------------------------------
         if (type === 'plant') {
-            this.plantImage = scene.add.image(0, 0, 'plant');
+            this.plantImage = scene.add.image(0, 0, this.getPlantTextureKey(1));
             //----
             // sprite size plant change!!!!
-            this.plantImage.setScale(0.05);
+            this.plantImage.setScale(0.09);
             //----
 
             this.plantImage.setOrigin(0.5, 1);
@@ -72,21 +85,21 @@ export class Prop {
         // BUILDING PROP (uses real image)
         // ---------------------------------------------------
         else if (type === 'building') {
-            const house = scene.add.image(0, 0, 'object-house');
+            const building = scene.add.image(0, 0, BUILDING_TEXTURE_KEYS[this.buildingVariant]);
 
-            house.setScale(0.5);
-            house.setOrigin(0.5, 1);
+            building.setScale(0.5);
+            building.setOrigin(0.5, 1);
 
-            children.push(house);
+            children.push(building);
 
-            this.interactRadius = 70;
+            this.interactRadius = 90;
 
             // --------------------------------------------------
             // SOLID COLLISION BODY
             // --------------------------------------------------
 
-            const bodyWidth = house.displayWidth;
-            const bodyHeight = house.displayHeight;
+            const bodyWidth = building.displayWidth;
+            const bodyHeight = building.displayHeight;
 
             // Collision near bottom of house
             this.collider = scene.add.rectangle(
@@ -152,7 +165,7 @@ export class Prop {
         // ---------------------------------------------------
         // INTERACTION PROMPT
         // ---------------------------------------------------
-        this.promptText = scene.add.text(0, 20, '[E] Interact', {
+        this.promptText = scene.add.text(0, 20, this.targetScene ? '[E] Enter' : '[E] Interact', {
             fontSize: '10px',
             color: '#ffee77',
             fontFamily: 'monospace',
@@ -242,34 +255,32 @@ export class Prop {
         this.onInteract?.();
     }
 
+    private getPlantTextureKey(stage: 1 | 2 | 3 | 4): string {
+        return `${this.plantVariant}_stage${stage}`;
+    }
+
     update(delta: number): void {
-    if (this.type !== 'plant') return;
-    if (!this.plantImage) return;
+        if (this.type !== 'plant') return;
+        if (!this.plantImage) return;
 
-    this.growthTimer += delta;
+        this.growthTimer += delta;
 
-    // Stage 1 → Stage 2 after 5 seconds
-    if (this.plantStage === 1 && this.growthTimer > 5000) {
-        this.plantStage = 2;
-        this.plantImage.setTexture('plant_stage2');
-        // Add audio cue for plant growth
-        // this.scene.sound.play('plant_growth'); //Unsure solution
+        // Stage 1 → Stage 2 after 5 seconds
+        if (this.plantStage === 1 && this.growthTimer > 5000) {
+            this.plantStage = 2;
+            this.plantImage.setTexture(this.getPlantTextureKey(2));
+        }
+
+        // Stage 2 → Stage 3 after 10 seconds
+        if (this.plantStage === 2 && this.growthTimer > 10000) {
+            this.plantStage = 3;
+            this.plantImage.setTexture(this.getPlantTextureKey(3));
+        }
+
+        // Stage 3 → Stage 4 after 15 seconds
+        if (this.plantStage === 3 && this.growthTimer > 15000) {
+            this.plantStage = 4;
+            this.plantImage.setTexture(this.getPlantTextureKey(4));
+        }
     }
-
-    // Stage 2 → Stage 3 after 10 seconds
-    if (this.plantStage === 2 && this.growthTimer > 10000) {
-        this.plantStage = 3;
-        this.plantImage.setTexture('plant_stage3');
-        // Add audio cue for plant growth
-        // this.scene.sound.play('plant_growth'); //Unsure solution
-    }
-
-    // Stage 3 → Stage 4 after 15 seconds
-    if (this.plantStage === 3 && this.growthTimer > 15000) {
-        this.plantStage = 4;
-        this.plantImage.setTexture('plant_stage4');
-        // Add audio cue for plant growth
-        // this.scene.sound.play('plant_growth'); //Unsure solution
-    }
-}
 }
