@@ -188,7 +188,7 @@ const FLOOR_DETECTION_ZONES: FloorZone[] = [
     ...BASE_FLOOR_ZONES,
 ];
 
-/** Every plant visual added under public/assets/sprites/Plants/plants. */
+/** Every plant visual added under public/assets/sprites/plants. */
 const PLANT_ASSETS: Record<PlantVariant, { folder: string; filePrefix: string }> = {
     beat_beet:         { folder: 'Beat_Beet',         filePrefix: 'Beatbeet' },
     crescendo_carrot:  { folder: 'Crescendo_Carrot',  filePrefix: 'CrescendoCarrot' },
@@ -231,7 +231,7 @@ const EXTRA_PROPS: PropConfig[] = [
     { x: 1460, y: 190,  type: 'building', label: 'Village House', buildingVariant: 'house' },
     { x: 2350, y: 190,  type: 'building', label: 'Village House', buildingVariant: 'house' },
     { x: 3180, y: 190,  type: 'building', label: 'Village House', buildingVariant: 'house' },
-    { x: 3180, y: 720,  type: 'building', label: 'Future Store',   buildingVariant: 'store' },
+    { x: 3180, y: 720,  type: 'building', label: 'Future Store',   buildingVariant:'store' },
     { x: 220,  y: 1050, type: 'building', label: 'Village House', buildingVariant: 'house' },
     { x: 1820, y: 1050, type: 'building', label: 'Village House', buildingVariant: 'house' },
     { x: 1460, y: 1510, type: 'building', label: 'Beach House',   buildingVariant: 'house' },
@@ -280,7 +280,7 @@ export class GameScene extends Phaser.Scene {
         };
 
         if (!this.textures.exists('player')) {
-            this.load.spritesheet('player', 'assets/sprites/Characters/player_spritesheet.png', {
+            this.load.spritesheet('player', 'assets/sprites/characters/player_spritesheet.png', {
                 frameWidth: 32,
                 frameHeight: 32,
             });
@@ -291,36 +291,36 @@ export class GameScene extends Phaser.Scene {
         // hard-coded extension here; that creates Phaser processing warnings
         // whenever the user replaces e.g. stone.jpeg with stone.png.
 
-        loadImageOnce('object-house', '/assets/objects/Main_House/Main_House.png');
-        loadImageOnce('object-store', '/assets/objects/main_Store/Store_Building_Seeds.png');
-        loadImageOnce('planter-big', '/assets/sprites/Plants/planter/planter_big.png');
-        loadImageOnce('planter-small', '/assets/sprites/Plants/planter/planter_small.png');
+        loadImageOnce('object-house', '/assets/objects/main_house/main_house_daphne.png');
+        loadImageOnce('object-store', '/assets/objects/main_store/store_building_seeds.png');
+        loadImageOnce('planter-big', '/assets/sprites/plants/planter/planter_big.png');
+        loadImageOnce('planter-small', '/assets/sprites/plants/planter/planter_small.png');
 
         for (const [plantVariant, asset] of Object.entries(PLANT_ASSETS) as [PlantVariant, { folder: string; filePrefix: string }][]) {
             loadImageOnce(
                 `${plantVariant}_stage1`,
-                `/assets/sprites/Plants/plants/${asset.folder}/${asset.filePrefix}_01_Seed.png`
+                `/assets/sprites/plants/${asset.folder}/${asset.filePrefix}_01_Seed.png`
             );
             loadImageOnce(
                 `${plantVariant}_stage2`,
-                `/assets/sprites/Plants/plants/${asset.folder}/${asset.filePrefix}_02_Sprout.png`
+                `/assets/sprites/plants/${asset.folder}/${asset.filePrefix}_02_Sprout.png`
             );
             loadImageOnce(
                 `${plantVariant}_stage3`,
-                `/assets/sprites/Plants/plants/${asset.folder}/${asset.filePrefix}_03_Growing.png`
+                `/assets/sprites/plants/${asset.folder}/${asset.filePrefix}_03_Growing.png`
             );
             loadImageOnce(
                 `${plantVariant}_stage4`,
-                `/assets/sprites/Plants/plants/${asset.folder}/${asset.filePrefix}_04_Mature.png`
+                `/assets/sprites/plants/${asset.folder}/${asset.filePrefix}_04_Mature.png`
             );
         }
 
-        // Backward-compatible default keys. Existing code that still asks for
-        // plant_stage1, plant_stage2, etc. will use Vinyl Vine.
-        loadImageOnce('plant_stage1', '/assets/sprites/Plants/plants/Vinyl_Vine/VinylVine_01_Seed.png');
-        loadImageOnce('plant_stage2', '/assets/sprites/Plants/plants/Vinyl_Vine/VinylVine_02_Sprout.png');
-        loadImageOnce('plant_stage3', '/assets/sprites/Plants/plants/Vinyl_Vine/VinylVine_03_Growing.png');
-        loadImageOnce('plant_stage4', '/assets/sprites/Plants/plants/Vinyl_Vine/VinylVine_04_Mature.png');
+        // // Backward-compatible default keys. Existing code that still asks for
+        // // plant_stage1, plant_stage2, etc. will use Vinyl Vine.
+        // loadImageOnce('plant_stage1', '/assets/sprites/plants/Vinyl_Vine/VinylVine_01_Seed.png');
+        // loadImageOnce('plant_stage2', '/assets/sprites/plants/Vinyl_Vine/VinylVine_02_Sprout.png');
+        // loadImageOnce('plant_stage3', '/assets/sprites/plants/Vinyl_Vine/VinylVine_03_Growing.png');
+        // loadImageOnce('plant_stage4', '/assets/sprites/plants/Vinyl_Vine/VinylVine_04_Mature.png');
     }
 
     // ── Create ────────────────────────────────────────────────

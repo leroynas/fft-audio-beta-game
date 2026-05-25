@@ -24,7 +24,7 @@ export class StartScene extends Phaser.Scene {
     }
 
     preload(): void {
-        this.load.spritesheet('player', 'assets/sprites/player_spritesheet.png', {
+        this.load.spritesheet('player', 'assets/sprites/characters/player_spritesheet.png', {
             frameWidth: 32,
             frameHeight: 32,
         });
@@ -34,34 +34,34 @@ export class StartScene extends Phaser.Scene {
         // not preload hard-coded tile extensions, so replacing grass.png with
         // grass.jpg/jpeg will not break startup.
 
-        this.load.image('object-house', '/assets/objects/Main_House.png');
-        this.load.image('object-store', '/assets/objects/Store_Building.png');
-        this.load.image('planter-big', '/assets/sprites/Plants/planter/planter_big.png');
-        this.load.image('planter-small', '/assets/sprites/Plants/planter/planter_small.png');
+        this.load.image('object-house', '/assets/objects/main_house/main_house_daphne.png');
+        this.load.image('object-store', '/assets/objects/main_store/store_building_seeds.png');
+        this.load.image('planter-big', '/assets/sprites/plants/planter/planter_big.png');
+        this.load.image('planter-small', '/assets/sprites/plants/planter/planter_small.png');
 
         for (const plant of PLANT_PRELOADS) {
             this.load.image(
                 `${plant.key}_stage1`,
-                `/assets/sprites/Plants/plants/${plant.folder}/${plant.filePrefix}_01_Seed.png`
+                `/assets/sprites/plants/${plant.folder}/${plant.filePrefix}_01_Seed.png`
             );
             this.load.image(
                 `${plant.key}_stage2`,
-                `/assets/sprites/Plants/plants/${plant.folder}/${plant.filePrefix}_02_Sprout.png`
+                `/assets/sprites/plants/${plant.folder}/${plant.filePrefix}_02_Sprout.png`
             );
             this.load.image(
                 `${plant.key}_stage3`,
-                `/assets/sprites/Plants/plants/${plant.folder}/${plant.filePrefix}_03_Growing.png`
+                `/assets/sprites/plants/${plant.folder}/${plant.filePrefix}_03_Growing.png`
             );
             this.load.image(
                 `${plant.key}_stage4`,
-                `/assets/sprites/Plants/plants/${plant.folder}/${plant.filePrefix}_04_Mature.png`
+                `/assets/sprites/plants/${plant.folder}/${plant.filePrefix}_04_Mature.png`
             );
         }
 
-        this.load.image('plant_stage1', '/assets/sprites/Plants/plants/Vinyl_Vine/VinylVine_01_Seed.png');
-        this.load.image('plant_stage2', '/assets/sprites/Plants/plants/Vinyl_Vine/VinylVine_02_Sprout.png');
-        this.load.image('plant_stage3', '/assets/sprites/Plants/plants/Vinyl_Vine/VinylVine_03_Growing.png');
-        this.load.image('plant_stage4', '/assets/sprites/Plants/plants/Vinyl_Vine/VinylVine_04_Mature.png');
+        // this.load.image('plant_stage1', '/assets/sprites/plants/Vinyl_Vine/VinylVine_01_Seed.png');
+        // this.load.image('plant_stage2', '/assets/sprites/plants/Vinyl_Vine/VinylVine_02_Sprout.png');
+        // this.load.image('plant_stage3', '/assets/sprites/plants/Vinyl_Vine/VinylVine_03_Growing.png');
+        // this.load.image('plant_stage4', '/assets/sprites/plants/Vinyl_Vine/VinylVine_04_Mature.png');
     }
 
     create(): void {

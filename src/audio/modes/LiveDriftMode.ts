@@ -1,11 +1,11 @@
 /**
- * LiveDriftMode.ts — Mode B: ECHTE Granular Synthesis (v27 — Anti-Repetition)
+ * LiveDriftMode.ts — Mode B: Granular (v30.3 - Improved Overlap)
  *
- * Volledig herzien voor VARIATIE:
- * - Sterke multi-timescale drift (short + medium + long term)
- * - Langzamere parameter evolutie + subtiele random walk
- * - Meer variatie in grain position, detune en burst timing
- * - Herkenbaar maar nooit repetitief
+ * Belangrijkste wijzigingen:
+ * - Herziene overlap berekening voor betere balans tussen smoothheid en definitie
+ * - Dynamische overlap reductie bij snelle triggers
+ * - Betere relatie tussen grainSize en overlap
+ * - Polyphony behouden voor snelle triggering
  */
 
 import * as Tone from 'tone';
@@ -13,11 +13,26 @@ import { IAudioMode, seededRandom } from '../AudioManager';
 import { PerformerState } from '../PerformerState';
 import { FloorType, PropType } from '../../types';
 
-const FOOTSTEP_SAMPLES: Record<FloorType, string[]> = { /* ongewijzigd */ };
-const PROP_SAMPLES: Record<PropType, string[]> = { /* ongewijzigd */ };
+const FOOTSTEP_SAMPLES: Record<FloorType, string[]> = {
+    grass: ['/assets/audio/footsteps/wood/wood_01.mp3'],
+    sand: ['/assets/audio/footsteps/gravel/gravel_01.mp3'],
+    water: ['/assets/audio/footsteps/stone/stone_01.mp3'],
+    stone: ['/assets/audio/footsteps/stone/stone_01.mp3'],
+    wood: ['/assets/audio/footsteps/wood/wood_01.mp3'],
+    gravel: ['/assets/audio/footsteps/gravel/gravel_01.mp3'],
+};
 
-const BASE_VOLUME_DB = 3.2;
-const MIN_RETRIGGER_MS = 36;
+const PROP_SAMPLES: Record<PropType, string[]> = {
+    keys: ['/assets/audio/props/keys_01.mp3'],
+    cloth: ['/assets/audio/props/cloth_01.mp3'],
+    barrel: ['/assets/audio/props/barrel_01.mp3'],
+    door: ['/assets/audio/props/door_01.mp3'],
+    building: ['/assets/audio/props/door_01.mp3'],
+    plant: ['/assets/audio/props/keys_01.mp3'],
+};
+
+const BASE_VOLUME_DB = -4;
+const MIN_RETRIGGER_MS = 28;
 
 function clamp(v: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, v));
@@ -26,10 +41,13 @@ function clamp(v: number, min: number, max: number): number {
 type SampleGroup = FloorType | PropType;
 
 export class LiveDriftMode implements IAudioMode {
-    private grainPlayers = new Map<string, Tone.GrainPlayer>();
+    private grainPlayers = new Map<string, Tone.GrainPlayer[]>();
     private filter?: Tone.Filter;
-    private compressor?: Tone.Compressor;
+    private eq?: Tone.EQ3;
+    private dynamicHigh?: Tone.Filter;
+    private masterComp?: Tone.Compressor;
     private analyser?: Tone.Analyser;
+
     private rng: () => number;
     private initialized = false;
     private disposed = false;
@@ -41,29 +59,36 @@ export class LiveDriftMode implements IAudioMode {
         cutoff: number;
         grainSize: number;
         overlap: number;
-        driftOffset: number;     // extra lange-termijn drift
+        driftOffset: number;
         lastMs: number;
         count: number;
+        playerIndex: number;
     }>();
 
-    private globalDrift = 0;     // langzaam stijgende drift voor hele mode
+    private globalDrift = 0;
 
-    constructor(private readonly state: PerformerState, private readonly output: Tone.ToneAudioNode, seed: string) {
-        this.rng = seededRandom(seed + '_granular_mode_b_v27');
+    constructor(
+        private readonly state: PerformerState,
+        private readonly output: Tone.ToneAudioNode,
+        seed: string
+    ) {
+        this.rng = seededRandom(seed + '_granular_mode_b_v30_3');
     }
 
     async init(): Promise<void> {
         if (this.initialized) return;
 
-        this.filter = new Tone.Filter({ frequency: 2600, type: 'lowpass', rolloff: -24, Q: 1.0 });
-        this.compressor = new Tone.Compressor({ threshold: -26, ratio: 7, attack: 0.003, release: 0.14, knee: 12 });
-        this.analyser = new Tone.Analyser('fft', 64);
+        this.eq = new Tone.EQ3({ low: -1.8, mid: 0, high: 1.8 });
+        this.filter = new Tone.Filter({ frequency: 4800, type: 'lowpass', rolloff: -12, Q: 0.6 });
+        this.dynamicHigh = new Tone.Filter({ type: 'highshelf', frequency: 6200, Q: 0.7, rolloff: -12 });
+        this.masterComp = new Tone.Compressor({ threshold: -22, ratio: 4, attack: 0.008, release: 0.18, knee: 8 });
+        this.analyser = new Tone.Analyser('fft', 128);
 
-        this.filter.connect(this.compressor);
-        this.compressor.connect(this.analyser);
+        this.eq.connect(this.filter);
+        this.filter.connect(this.dynamicHigh);
+        this.dynamicHigh.connect(this.masterComp);
+        this.masterComp.connect(this.analyser);
         this.analyser.connect(this.output);
-
-        // ... (zelfde sample loading als v25)
 
         const urls = new Set<string>();
         Object.values(FOOTSTEP_SAMPLES).forEach(list => list.forEach(u => urls.add(u)));
@@ -71,39 +96,50 @@ export class LiveDriftMode implements IAudioMode {
 
         const loads: Promise<void>[] = [];
         for (const url of urls) {
-            loads.push(new Promise<void>((resolve) => {
-                try {
+            this.grainPlayers.set(url, []);
+            for (let i = 0; i < 2; i++) {
+                loads.push(new Promise<void>((resolve) => {
                     const gp = new Tone.GrainPlayer({
-                        url, volume: BASE_VOLUME_DB, grainSize: 0.22, overlap: 0.65,
+                        url,
+                        volume: BASE_VOLUME_DB,
+                        grainSize: 0.18,
+                        overlap: 0.68,
+                        loop: true,
                         onload: () => {
                             if (!this.disposed) {
-                                this.grainPlayers.set(url, gp);
-                                gp.connect(this.filter!);
+                                this.grainPlayers.get(url)!.push(gp);
+                                gp.connect(this.eq!);
                             }
                             resolve();
-                        }
+                        },
                     });
-                } catch { resolve(); }
-            }));
+                }));
+            }
         }
 
         await Promise.all(loads);
         this.initialized = true;
-        console.log(`[LiveDriftMode v27] Granular Mode B — anti-repetition & sterke drift`);
+        console.log(`[LiveDriftMode v30.3] Herziene Overlap + Polyphony`);
     }
 
     playFootstep(floor: FloorType): void { this.playGranular(floor, FOOTSTEP_SAMPLES[floor], 'footstep'); }
     playPropInteract(prop: PropType): void { this.playGranular(prop, PROP_SAMPLES[prop], 'prop'); }
 
     private playGranular(group: SampleGroup, urls: string[], kind: 'footstep' | 'prop'): void {
-        if (this.disposed || !this.initialized || !this.filter || urls.length === 0) return;
+        if (this.disposed || !this.initialized || !this.eq || !this.filter || !this.analyser) return;
 
         const now = performance.now();
         let prev = this.memory.get(group) ?? {
             index: Math.floor(this.rng() * urls.length),
-            pitch: 0, volume: BASE_VOLUME_DB, cutoff: 2600,
-            grainSize: 0.22, overlap: 0.65, driftOffset: 0,
-            lastMs: -Infinity, count: 0
+            pitch: 0,
+            volume: BASE_VOLUME_DB,
+            cutoff: 4800,
+            grainSize: 0.18,
+            overlap: 0.68,
+            driftOffset: 0,
+            lastMs: -Infinity,
+            count: 0,
+            playerIndex: 0,
         };
 
         if (now - prev.lastMs < MIN_RETRIGGER_MS) return;
@@ -114,77 +150,143 @@ export class LiveDriftMode implements IAudioMode {
         const tightness = clamp(this.state.tightness, 0, 1);
         const wetness = clamp((this.state as any).wetness ?? 0.35, 0, 1);
 
-        this.globalDrift += 0.004 + energy * 0.006;   // langzame globale evolutie
+        this.globalDrift += 0.0045 + energy * 0.0065;
 
         const randomBend = this.rng() * 2 - 1;
-        const phrase = Math.sin(prev.count * 0.27 + this.globalDrift * 1.8);
+        const phrase = Math.sin(prev.count * 0.22 + this.globalDrift * 2.3);
 
-        // Drift + variatie
-        const jumpChance = kind === 'footstep' ? clamp(0.18 + energy * 0.22 - tightness * 0.12, 0.09, 0.45) : 0.35;
-        const nextIndex = this.rng() < jumpChance ? Math.floor(this.rng() * urls.length) : (prev.index + 1) % urls.length;
+        const jumpChance = kind === 'footstep'
+            ? clamp(0.14 + energy * 0.26 - tightness * 0.14, 0.07, 0.38)
+            : 0.32;
+
+        const nextIndex = this.rng() < jumpChance
+            ? Math.floor(this.rng() * urls.length)
+            : (prev.index + 1) % urls.length;
 
         const url = urls[nextIndex];
-        const gp = this.grainPlayers.get(url);
-        if (!gp?.loaded || !gp.buffer) return;
+        const players = this.grainPlayers.get(url);
+        if (!players || players.length === 0) return;
 
-        // === Sterke multi-scale targets + extra drift ===
-        const targetPitch = clamp(
-            (energy - 0.45) * 2.4 + (brightness - 0.5) * 1.65 + (wetness - 0.5) * -1.1 +
-            phrase * 1.2 + randomBend * 0.9 + this.globalDrift * 0.8,
-            -6, 6
-        );
+        const playerIndex = (prev.playerIndex + 1) % players.length;
+        const gp = players[playerIndex];
+        if (!gp || !gp.loaded || !gp.buffer) return;
 
-        const targetVolume = clamp(BASE_VOLUME_DB + weight * 6.0 + energy * 3.1 + randomBend * 1.7 - wetness * 2.0, -11, 9);
+        // === HERZIENE OVERLAP BEREKENING ===
+        const timeSinceLast = now - prev.lastMs;
+        const isFastTrigger = timeSinceLast < 55;
 
-        const targetGrainSize = clamp(0.13 + (1 - tightness) * 0.39 + wetness * 0.11 + Math.sin(this.globalDrift) * 0.07, 0.10, 0.60);
-        const targetOverlap = clamp(0.50 + tightness * 0.40 + energy * 0.25 + wetness * 0.16, 0.42, 0.94);
+        const baseOverlap = 0.59;
+        const tightnessInfluence = tightness * 0.36;     // meer tightness = meer smooth
+        const energyInfluence = energy * 0.26;
+        const wetnessInfluence = wetness * 0.24;
 
-        const targetCutoff = clamp(680 + brightness * 5300 + wetness * 1450 + energy * 1150 + this.globalDrift * 300, 550, 9900);
+        let targetOverlap = baseOverlap + tightnessInfluence + energyInfluence + wetnessInfluence;
 
-        // Langzame smoothing (voorkomt herhaling)
-        const pitch = prev.pitch * 0.58 + targetPitch * 0.42;
-        const volume = prev.volume * 0.55 + targetVolume * 0.45;
-        const grainSize = prev.grainSize * 0.65 + targetGrainSize * 0.35;
-        const overlap = prev.overlap * 0.62 + targetOverlap * 0.38;
-        const cutoff = prev.cutoff * 0.70 + targetCutoff * 0.30;
-
-        // FFT adaptive mixing (zoals voorheen)
-        const fft = this.analyser!.getValue() as Float32Array;
-        let low = 0, mid = 0;
-        for (let i = 0; i < 14; i++) low += fft[i];
-        for (let i = 14; i < 38; i++) mid += fft[i];
-        const spectralConflict = clamp((low * 1.4 + mid * 0.85) / 22 - 1.15, 0, 1.8);
-
-        try {
-            gp.playbackRate = Math.pow(2, pitch / 12);
-            gp.detune = (pitch % 1) * 100 + randomBend * 40;   // extra detune variatie
-            gp.grainSize = grainSize;
-            gp.overlap = overlap;
-            gp.volume.value = volume - spectralConflict * 3.8;
-
-            this.filter.frequency.setTargetAtTime(cutoff, Tone.now(), 0.09);
-            this.filter.Q.value = 0.9 + tightness * 2.3;
-
-            const burstDuration = clamp(0.24 + energy * 0.45 + (1 - tightness) * 0.36, 0.24, 0.95);
-            // Extra variatie in offset
-            const randomOffset = gp.buffer.duration * (0.03 + this.rng() * 0.48 + Math.sin(this.globalDrift) * 0.15);
-
-            if (gp.state === 'started') gp.stop();
-            gp.start(Tone.now(), randomOffset, burstDuration);
-
-        } catch (err) {
-            console.warn('[LiveDriftMode v27] granular burst:', err);
+        // Dynamische reductie bij snelle triggers (voorkomt moddiness)
+        if (isFastTrigger) {
+            targetOverlap -= 0.14;
         }
 
-        this.memory.set(group, { index: nextIndex, pitch, volume, cutoff, grainSize, overlap, driftOffset: this.globalDrift, lastMs: now, count: prev.count + 1 });
+        // Extra reductie bij hoge energy + lage tightness (snelle, lichte stappen)
+        if (energy > 0.75 && tightness < 0.4) {
+            targetOverlap -= 0.09;
+        }
+
+        targetOverlap = clamp(targetOverlap, 0.51, 0.89);
+
+        // === GrainSize (goed afgestemd op overlap) ===
+        const targetGrainSize = clamp(
+            0.13 + (1 - tightness) * 0.36 + wetness * 0.14 - energy * 0.05,
+            0.09,
+            0.53
+        );
+
+        // === Overige targets ===
+        const targetPitch = clamp(
+            (energy - 0.5) * 2.4 + (brightness - 0.5) * 1.6 + (wetness - 0.5) * -0.8 +
+            phrase * 0.75 + randomBend * 0.65,
+            -4.0, 4.0
+        );
+
+        const targetVolume = clamp(
+            BASE_VOLUME_DB + weight * 3.8 + energy * 2.2 + randomBend * 0.9 - wetness * 2.0,
+            -16, 1.5
+        );
+
+        const targetCutoff = clamp(1250 + brightness * 4800 + wetness * 950 + energy * 750, 1000, 10200);
+
+        // Smoothing
+        const pitch = prev.pitch * 0.74 + targetPitch * 0.26;
+        const volume = prev.volume * 0.71 + targetVolume * 0.29;
+        const grainSize = prev.grainSize * 0.76 + targetGrainSize * 0.24;
+        const overlap = prev.overlap * 0.69 + targetOverlap * 0.31;   // soepele overgang
+        const cutoff = prev.cutoff * 0.72 + targetCutoff * 0.28;
+
+        // Spectral Analysis
+        const fft = this.analyser.getValue() as Float32Array;
+        const low = fft.slice(0, 14).reduce((a, b) => a + b, 0) / 14;
+        const mid = fft.slice(14, 42).reduce((a, b) => a + b, 0) / 28;
+        const spectralDensity = clamp(low * 1.2 + mid * 0.8 - 3.2, 0, 2.1);
+
+        const adaptiveVolume = volume - spectralDensity * 2.8;
+
+        // Dynamic EQ
+        this.eq.high.value = (brightness * 3.5) - 1.8;
+        this.eq.low.value = wetness * -4.5;
+
+        if (this.dynamicHigh) {
+            this.dynamicHigh.frequency.setTargetAtTime(5200 + brightness * 3400, Tone.now(), 0.11);
+            this.dynamicHigh.gain.value = -3.5;
+        }
+
+        // Apply parameters
+        gp.playbackRate = Math.pow(2, pitch / 12);
+        gp.detune = (pitch % 1) * 70;
+        gp.grainSize = grainSize;
+        gp.overlap = overlap;
+
+        this.filter.frequency.setTargetAtTime(cutoff, Tone.now(), 0.075);
+        this.filter.Q.value = 0.55 + tightness * 1.1;
+
+        // Burst
+        const burstDuration = clamp(0.20 + energy * 0.35 - tightness * 0.22, 0.16, 0.72);
+        const randomOffset = gp.buffer.duration * (0.03 + this.rng() * 0.52);
+
+        if (gp.state === 'started') gp.stop();
+
+        gp.start(Tone.now(), randomOffset);
+
+        gp.volume.cancelScheduledValues(Tone.now());
+        gp.volume.setValueAtTime(adaptiveVolume - 12, Tone.now());
+        gp.volume.rampTo(adaptiveVolume, 0.022);
+        gp.volume.rampTo(adaptiveVolume - 2.8, burstDuration * 0.65);
+        gp.volume.rampTo(adaptiveVolume - 8, burstDuration * 0.95);
+
+        this.memory.set(group, {
+            index: nextIndex,
+            pitch,
+            volume: adaptiveVolume,
+            cutoff,
+            grainSize,
+            overlap,
+            driftOffset: this.globalDrift,
+            lastMs: now,
+            count: prev.count + 1,
+            playerIndex,
+        });
     }
-    
+
     dispose(): void {
         this.disposed = true;
         this.filter?.dispose();
-        this.compressor?.dispose();
+        this.eq?.dispose();
+        this.dynamicHigh?.dispose();
+        this.masterComp?.dispose();
         this.analyser?.dispose();
-        for (const gp of this.grainPlayers.values()) gp.dispose();
+
+        for (const players of this.grainPlayers.values()) {
+            players.forEach(p => p.dispose());
+        }
         this.grainPlayers.clear();
         this.memory.clear();
         this.initialized = false;

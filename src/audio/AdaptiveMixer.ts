@@ -1,13 +1,10 @@
 /**
- * AdaptiveMixer.ts — Phase 4: The "live FOH engineer" brain (v2 — FFT Visualization Optimized)
+ * AdaptiveMixer.ts — Phase 4: The "live FOH engineer" brain (v3 — Modes Independent)
  *
- * Verbeteringen:
- * - Debug code verwijderd (geen sin-wave meer op highShelf)
- * - FFT visualisatie veel duidelijker: low/mid/high bands zijn nu beter gescheiden en "up/down" is duidelijk zichtbaar
- * - Pulse-logic verbeterd → events worden nu preciezer weergegeven op de juiste frequenties
- * - BandEnergies en smoothing verfijnd voor granular SFX (meer accurate ducking)
- * - Analyse tap verplaatst naar compressor output → je ziet écht wat de speler hoort
- * - EQ decisions iets intelligenter (beter rekening met granular sustain)
+ * Aangepast voor volledige onafhankelijkheid:
+ * - Compressor veel milder → Mode B beïnvloedt Mode A vrijwel niet meer
+ * - FFT-visualisatie blijft sterk en duidelijk
+ * - EQ en ducking-logica behouden
  */
 
 import * as Tone from 'tone';
@@ -32,13 +29,13 @@ const MID_CUT_FREQ   = 1500;
 const MID_CUT_Q      = 1.5;
 const HIGH_LIFT_DB   = 3;
 
-// ── Compressor adaptive ranges ───────────────────────────────
-const COMP_THRESHOLD_QUIET = -18;
-const COMP_THRESHOLD_LOUD  = -8;
-const COMP_RATIO_MIN       = 1.5;
-const COMP_RATIO_MAX       = 6;
-const LOUD_METER_DB        = -10;
-const QUIET_METER_DB       = -30;
+// ── Compressor adaptive ranges (milder voor onafhankelijkheid) ────────
+const COMP_THRESHOLD_QUIET = -22;
+const COMP_THRESHOLD_LOUD  = -10;
+const COMP_RATIO_MIN       = 1.8;
+const COMP_RATIO_MAX       = 4.0;
+const LOUD_METER_DB        = -9;
+const QUIET_METER_DB       = -32;
 
 const EQ_LERP = 0.12;
 
@@ -107,12 +104,13 @@ export class AdaptiveMixer {
         this.midPeak  = new Tone.Filter({ type: 'peaking',  frequency: MID_CUT_FREQ, gain: 0, Q: MID_CUT_Q, rolloff: -12 });
         this.highShelf = new Tone.Filter({ type: 'highshelf', frequency: MID_UPPER, gain: 0, rolloff: -12 });
 
+        // Mildere compressor → Mode A en Mode B beïnvloeden elkaar veel minder
         this.compressor = new Tone.Compressor({
-            threshold: -12,
+            threshold: -14,
             ratio: 3,
-            attack: 0.01,
-            release: 0.15,
-            knee: 6,
+            attack: 0.012,
+            release: 0.25,
+            knee: 10,
         });
 
         // Signal chain
@@ -122,7 +120,7 @@ export class AdaptiveMixer {
         this.highShelf.connect(this.compressor);
         this.compressor.connect(this.output);
 
-        // === BELANGRIJKE FIX: analyse na compressor + parallel tap ===
+        // Analyse na compressor (wat de speler echt hoort)
         this.compressor.connect(this.fft);
         this.compressor.connect(this.meter);
     }
@@ -166,7 +164,6 @@ export class AdaptiveMixer {
         this.smoothMid  = lerp(this.smoothMid,  mid,  0.22);
         this.smoothHigh = lerp(this.smoothHigh, high, 0.22);
 
-        // FOH-style decisions (beter afgestemd op granular sustain)
         let targetLowGain = 0;
         if (this.smoothLow > LOW_LOUD_THRESHOLD && this.propActive) {
             targetLowGain = LOW_DUCK_DB;
@@ -190,7 +187,6 @@ export class AdaptiveMixer {
         this.midPeak.gain.value   = this.currentMidGain;
         this.highShelf.gain.value = this.currentHighGain;
 
-        // Adaptive compressor
         const meterDb = this.meter.getValue() as number;
         const loudness01 = Math.max(0, Math.min(1,
             (meterDb - QUIET_METER_DB) / (LOUD_METER_DB - QUIET_METER_DB)
@@ -213,9 +209,9 @@ export class AdaptiveMixer {
             fftBins[i] = Math.max(-60, Math.min(0, v));
         }
 
-        // Verbeterde pulse → duidelijk "up or down" per frequentiegebied
-        this.displayPhase += 0.22
-        const pulse = this.eventPulse * 1.35;;
+        this.displayPhase += 0.22;
+        const pulse = this.eventPulse * 1.35;
+
         if (pulse > 0.02) {
             for (let i = 0; i < fftBins.length; i++) {
                 const pos = i / Math.max(1, fftBins.length - 1);

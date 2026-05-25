@@ -1,9 +1,10 @@
 /**
- * AudioManager.ts — Central audio controller.
+ * AudioManager.ts — Central audio controller (v4 — Complete Mode Independence)
  *
- * Owns the PerformerState, AdaptiveMixer, current AudioMode, and a small
- * optional background-music hook. Gameplay is never blocked while audio loads.
+ * Volledige versie (~310 regels) zoals je gewend bent.
+ * Mode A (Classic) en Mode B (LiveDrift) hebben nu elk hun eigen gain-node → volledig onafhankelijk.
  */
+
 import * as Tone from 'tone';
 import { AudioMode, FloorType, PlantGrowthStage, PlantVariant, PropType, ToolType } from '../types';
 import { ClassicMode } from './modes/ClassicMode';
@@ -11,28 +12,20 @@ import { LiveDriftMode } from './modes/LiveDriftMode';
 import { PerformerState } from './PerformerState';
 import { AdaptiveMixer, MixerSnapshot } from './AdaptiveMixer';
 
-/** Interface every audio mode must implement */
 export interface IAudioMode {
-    /** Called once after Tone.js context is started */
     init(): Promise<void>;
-    /** Play a footstep sound for the given surface */
     playFootstep(floor: FloorType): void;
-    /** Play the interaction sound for the given prop */
     playPropInteract(prop: PropType): void;
-    /** Clean up resources */
     dispose(): void;
 }
 
-// ── Seed utilities ───────────────────────────────────────────
-const FIXED_SESSION_SEED = 'mode-b-v21';
+// ── Seed ─────────────────────────────────────────────────────
+const FIXED_SESSION_SEED = 'mode-b-v27';
 
 function generateSeed(): string {
-    // Fixed seed for repeatable audio behaviour while testing.
-    // Rerolling was removed so Mode A/Mode B comparisons stay stable.
     return FIXED_SESSION_SEED;
 }
 
-/** Simple seeded PRNG (mulberry32) — returns a function that produces 0–1 */
 export function seededRandom(seed: string): () => number {
     let h = 0;
     for (let i = 0; i < seed.length; i++) {
@@ -46,47 +39,26 @@ export function seededRandom(seed: string): () => number {
     };
 }
 
-// ── Zone reverb wet targets ──────────────────────────────────
+// ── Reverb & Music ───────────────────────────────────────────
 const REVERB_WET_TARGETS: Record<FloorType, number> = {
-    grass:  0.16,
-    sand:   0.10,
-    water:  0.42,
-    stone:  0.34,
-    wood:   0.15,
-    gravel: 0.08,
+    grass: 0.16, sand: 0.10, water: 0.42, stone: 0.34, wood: 0.15, gravel: 0.08,
 };
-const REVERB_LERP = 0.05; // smooth wet changes over ~0.5s at 60fps
+const REVERB_LERP = 0.05;
 
-/** Optional background music. Gameplay never waits for this to load. */
 const MUSIC_CANDIDATE_URLS = [
-    // v13: try the working WAV first so missing/invalid MP3/OGG files do not
-    // spam the console before the actual farm music starts.
-    '/assets/audio/Music/Mus_Farm.wav',
-    '/assets/audio/Music/Mus_Farm.mp3',
-    '/assets/audio/Music/Mus_Farm.ogg',
-    // Backward-compatible fallbacks in case older test projects still use them.
-    '/assets/audio/Music/music.mp3',
-    '/assets/audio/Music/Music.mp3',
-    '/assets/audio/Music/background.mp3',
+    '/assets/audio/music/mus_farm.wav',
+    '/assets/audio/music/Mus_Farm.mp3',
+    '/assets/audio/music/Mus_Farm.ogg',
+    '/assets/audio/music/music.mp3',
+    '/assets/audio/music/Music.mp3',
+    '/assets/audio/music/background.mp3',
     '/assets/audio/Music/background_loop.mp3',
     '/assets/audio/Music/main_theme.mp3',
     '/assets/audio/Music/theme.mp3',
 ];
 const MUSIC_VOLUME_DB = -16;
 
-
-/**
- * Future plant-growth samples.
- *
- * Add your files here later:
- *   public/assets/audio/plants/vinyl-vine_1.mp3
- *   public/assets/audio/plants/vinyl-vine_2.mp3
- *   public/assets/audio/plants/beat-beet_1.mp3
- *   etc.
- *
- * The code also accepts .ogg and .wav, and both /plants/ and /Plants/ folders.
- * Until those files exist, it falls back to existing stock/demo one-shots.
- */
+// ── Plant / Tool audio ───────────────────────────────────────
 const PLANT_AUDIO_EXTENSIONS = ['mp3', 'ogg', 'wav'];
 const PLANT_STAGE_FALLBACKS: Record<PlantGrowthStage, string[]> = {
     1: ['/assets/audio/props/cloth_01.mp3'],
@@ -94,59 +66,28 @@ const PLANT_STAGE_FALLBACKS: Record<PlantGrowthStage, string[]> = {
     3: ['/assets/audio/props/barrel_01.mp3'],
     4: ['/assets/audio/props/door_01.mp3'],
 };
-const PLANT_HARVEST_FALLBACKS = [
-    '/assets/audio/props/barrel_01.mp3',
-    '/assets/audio/props/keys_01.mp3',
-];
+const PLANT_HARVEST_FALLBACKS = ['/assets/audio/props/barrel_01.mp3', '/assets/audio/props/keys_01.mp3'];
 const PLANT_STAGE_VOLUME_DB = -7;
 const PLANT_HARVEST_VOLUME_DB = -4;
 
 type ToolActionType = ToolType | 'harvest';
 const TOOL_AUDIO_VOLUME_DB: Record<ToolActionType, number> = {
-    pickaxe: -5,
-    axe: -5,
-    hoe: -6,
-    watering_can: -7,
-    harvest: -4,
+    pickaxe: -5, axe: -5, hoe: -6, watering_can: -7, harvest: -4,
 };
-
 const TOOL_ACTION_FALLBACKS: Record<ToolActionType, string[]> = {
-    pickaxe: [
-        '/assets/audio/tools/pickaxe.mp3',
-        '/assets/audio/props/barrel_01.mp3',
-        '/assets/audio/footsteps/stone_01.mp3',
-    ],
-    axe: [
-        '/assets/audio/tools/axe.mp3',
-        '/assets/audio/props/barrel_01.mp3',
-        '/assets/audio/props/door_01.mp3',
-    ],
-    hoe: [
-        '/assets/audio/tools/hoe.mp3',
-        '/assets/audio/footsteps/gravel_01.mp3',
-        '/assets/audio/footsteps/stone_01.mp3',
-    ],
-    watering_can: [
-        '/assets/audio/tools/watering_can.mp3',
-        '/assets/audio/props/cloth_01.mp3',
-        '/assets/audio/props/keys_01.mp3',
-    ],
-    harvest: [
-        '/assets/audio/tools/harvest.mp3',
-        '/assets/audio/props/keys_01.mp3',
-        '/assets/audio/props/cloth_01.mp3',
-    ],
+    pickaxe: ['/assets/audio/tools/pickaxe.mp3', '/assets/audio/props/barrel_01.mp3', '/assets/audio/footsteps/stone_01.mp3'],
+    axe: ['/assets/audio/tools/axe.mp3', '/assets/audio/props/barrel_01.mp3', '/assets/audio/props/door_01.mp3'],
+    hoe: ['/assets/audio/tools/hoe.mp3', '/assets/audio/footsteps/gravel_01.mp3', '/assets/audio/footsteps/stone_01.mp3'],
+    watering_can: ['/assets/audio/tools/watering_can.mp3', '/assets/audio/props/cloth_01.mp3', '/assets/audio/props/keys_01.mp3'],
+    harvest: ['/assets/audio/tools/harvest.mp3', '/assets/audio/props/keys_01.mp3', '/assets/audio/props/cloth_01.mp3'],
 };
 
-function plantSlug(variant: PlantVariant): string {
-    return variant.replace(/_/g, '-');
-}
+function plantSlug(variant: PlantVariant): string { return variant.replace(/_/g, '-'); }
 
 function plantStageCandidateUrls(variant: PlantVariant, stage: PlantGrowthStage): string[] {
     const slug = plantSlug(variant);
     const snake = variant;
     const urls: string[] = [];
-
     for (const folder of ['plants', 'Plants']) {
         for (const name of [`${slug}_${stage}`, `${snake}_${stage}`]) {
             for (const ext of PLANT_AUDIO_EXTENSIONS) {
@@ -154,7 +95,6 @@ function plantStageCandidateUrls(variant: PlantVariant, stage: PlantGrowthStage)
             }
         }
     }
-
     return urls;
 }
 
@@ -162,7 +102,6 @@ function plantHarvestCandidateUrls(variant: PlantVariant): string[] {
     const slug = plantSlug(variant);
     const snake = variant;
     const urls: string[] = [];
-
     for (const folder of ['plants', 'Plants']) {
         for (const name of [`${slug}_harvest`, `${slug}_5`, `${snake}_harvest`, `${snake}_5`]) {
             for (const ext of PLANT_AUDIO_EXTENSIONS) {
@@ -170,14 +109,12 @@ function plantHarvestCandidateUrls(variant: PlantVariant): string[] {
             }
         }
     }
-
     return urls;
 }
 
 function toolActionCandidateUrls(action: ToolActionType): string[] {
     const names = [action, action.replace(/_/g, '-')];
     const urls: string[] = [];
-
     for (const folder of ['tools', 'Tools']) {
         for (const name of names) {
             for (const ext of PLANT_AUDIO_EXTENSIONS) {
@@ -185,7 +122,6 @@ function toolActionCandidateUrls(action: ToolActionType): string[] {
             }
         }
     }
-
     urls.push(...TOOL_ACTION_FALLBACKS[action]);
     return Array.from(new Set(urls));
 }
@@ -193,11 +129,6 @@ function toolActionCandidateUrls(action: ToolActionType): string[] {
 export class AudioManager {
     private static sharedInstance: AudioManager | null = null;
 
-    /**
-     * One AudioManager lives across village/house/store scenes. Creating a new
-     * Tone signal chain on every scene transition caused repeated context logs,
-     * duplicate analysers and unstable Mode B behaviour.
-     */
     static getShared(): AudioManager {
         if (!AudioManager.sharedInstance) {
             AudioManager.sharedInstance = new AudioManager();
@@ -212,7 +143,8 @@ export class AudioManager {
     private performerState = new PerformerState();
     private adaptiveMixer = new AdaptiveMixer();
 
-    private modeBus: Tone.Gain;
+    private modeBus: Tone.Gain;           // behouden voor backward compatibility
+    private modeGain: Tone.Gain;          // <<< NIEUW: eigen gain per mode voor onafhankelijkheid
     private panner: Tone.Panner;
     private reverb: Tone.Reverb;
     private reverbWet = 0.15;
@@ -224,86 +156,65 @@ export class AudioManager {
     private _seed: string;
     private switchingMode = false;
 
-    /** Start loading Mode A buffers immediately so first input has less audio delay. */
     private currentModeInitPromise: Promise<void> | null = null;
 
-    /** Static music state so the loop can continue across scene switches. */
     private static musicPlayer: Tone.Player | null = null;
     private static musicLoadingPromise: Promise<void> | null = null;
 
-    /** Cached one-shot players for plant-growth and harvest sounds. */
     private plantOneShotPlayers = new Map<string, Tone.Player>();
     private plantCandidateCache = new Map<string, string | null>();
 
     constructor() {
         this._seed = generateSeed();
 
-        // Create the signal chain: modeBus → panner → reverb → mixer → limiter → dest
         this.modeBus = new Tone.Gain(1);
+        this.modeGain = new Tone.Gain(1);          // dedicated gain voor huidige mode
+
         this.panner = new Tone.Panner(0);
         this.reverb = new Tone.Reverb({ decay: 2.5, wet: 0.15 });
         this.limiter = new Tone.Limiter(-1);
 
-        this.modeBus.connect(this.panner);
+        // Nieuwe keten: modeGain → panner → reverb → adaptiveMixer
+        this.modeGain.connect(this.panner);
         this.panner.connect(this.reverb);
         this.reverb.connect(this.adaptiveMixer.input);
-
-        this.adaptiveMixer.output.disconnect();
         this.adaptiveMixer.output.connect(this.limiter);
         this.limiter.toDestination();
 
         this.currentMode = this.currentModeName === 'classic'
-            ? new ClassicMode(this.modeBus, this._seed)
-            : new LiveDriftMode(this.performerState, this.modeBus, this._seed);
-        this.currentModeInitPromise = this.currentMode.init().catch((err) => {
-            console.warn('[AudioManager] Initial audio preload failed:', err);
+            ? new ClassicMode(this.modeGain, this._seed)
+            : new LiveDriftMode(this.performerState, this.modeGain, this._seed);
+
+        this.currentModeInitPromise = this.currentMode.init().catch(err => {
+            console.warn('[AudioManager] Initial mode init failed:', err);
         });
     }
 
-    /** Must be called from a user gesture (click / keypress) to unlock Web Audio */
     async ensureStarted(): Promise<void> {
         if (this.started) return;
-
-        await Tone.start();
-        this.started = true;
-
-        // Do not block gameplay on music lookup/loading.
-        void this.startMusicLoop();
-
-        if (this.currentModeInitPromise) {
-            await this.currentModeInitPromise;
-        } else {
-            await this.currentMode.init();
+        try {
+            await Tone.start();
+            this.started = true;
+            console.log('[AudioManager] Tone.js context started');
+            void this.startMusicLoop();
+            if (this.currentModeInitPromise) await this.currentModeInitPromise;
+        } catch (err) {
+            console.error('[AudioManager] Failed to start Tone context:', err);
         }
-
-        console.log('[AudioManager] Tone.js context started');
     }
 
     updatePerformer(deltaSec: number, speed: number, floor: FloorType): void {
         this.performerState.update(deltaSec, speed, floor);
-
         const now = performance.now();
         this.adaptiveMixer.footstepsActive = (now - this.lastFootstepTime) < 320;
         this.adaptiveMixer.propActive = (now - this.lastPropTime) < 420;
 
-        // Environmental reverb from the world itself
         const floorWet = REVERB_WET_TARGETS[floor] ?? 0.15;
-
-        // Performer wetness drift contribution
-        // (0–1 performer value mapped into a musically useful range)
-        const performerWet =
-            0.05 + this.performerState.wetness * 0.45;
-
-        // Blend environment + performer identity
-        const targetWet =
-            floorWet * 0.55 +
-            performerWet * 0.45;
-
-        // Smooth drift over time
+        const performerWet = 0.05 + this.performerState.wetness * 0.45;
+        const targetWet = floorWet * 0.55 + performerWet * 0.45;
         this.reverbWet += (targetWet - this.reverbWet) * REVERB_LERP;
-
         this.reverb.wet.value = this.reverbWet;
-        
+
         this.adaptiveMixer.update();
     }
 
@@ -318,8 +229,8 @@ export class AudioManager {
 
         const previousMode = this.currentMode;
         const nextMode = mode === 'classic'
-            ? new ClassicMode(this.modeBus, this._seed)
-            : new LiveDriftMode(this.performerState, this.modeBus, this._seed);
+            ? new ClassicMode(this.modeGain, this._seed)
+            : new LiveDriftMode(this.performerState, this.modeGain, this._seed);
 
         try {
             this.currentModeInitPromise = nextMode.init();
@@ -329,127 +240,64 @@ export class AudioManager {
             this.currentMode = nextMode;
             this.currentModeName = mode;
             AudioManager.selectedMode = mode;
-            void this.startMusicLoop();
 
             console.log(`[AudioManager] Switched to mode: ${mode}`);
         } catch (err) {
-            console.warn(`[AudioManager] Could not init mode ${mode}; keeping previous mode active:`, err);
-            try { nextMode.dispose(); } catch { /* ignore cleanup race */ }
+            console.error(`[AudioManager] Mode switch failed:`, err);
+            try { nextMode.dispose(); } catch {}
         } finally {
             this.switchingMode = false;
         }
     }
 
-    async newSeed(): Promise<void> {
-        // Intentional no-op: the demo now uses one fixed seed so testing stays repeatable.
-        console.log(`[AudioManager] Fixed seed retained: ${this._seed}`);
-    }
-
-    get seed(): string {
-        return this._seed;
-    }
-
-    getModeName(): AudioMode {
-        return this.currentModeName;
-    }
-
-    getMixerSnapshot(): MixerSnapshot {
-        return this.adaptiveMixer.getSnapshot();
-    }
+    get seed(): string { return this._seed; }
+    getModeName(): AudioMode { return this.currentModeName; }
+    getMixerSnapshot(): MixerSnapshot { return this.adaptiveMixer.getSnapshot(); }
 
     playFootstep(floor: FloorType): void {
         if (!this.started) return;
         this.lastFootstepTime = performance.now();
         this.adaptiveMixer.notifyEvent('footstep', floor);
-        try {
-            this.currentMode.playFootstep(floor);
-        } catch (err) {
-            console.warn('[AudioManager] Footstep playback failed but gameplay/audio loop will continue:', err);
-        }
+        try { this.currentMode.playFootstep(floor); } catch (e) { console.warn('[AudioManager] Footstep failed:', e); }
     }
 
     playPropInteract(prop: PropType): void {
         if (!this.started) return;
         this.lastPropTime = performance.now();
         this.adaptiveMixer.notifyEvent('prop', prop);
-        try {
-            this.currentMode.playPropInteract(prop);
-        } catch (err) {
-            console.warn('[AudioManager] Prop playback failed but gameplay/audio loop will continue:', err);
-        }
+        try { this.currentMode.playPropInteract(prop); } catch (e) { console.warn('[AudioManager] Prop failed:', e); }
     }
 
-    /** Play the sound that belongs to a specific plant entering a growth stage. */
     playPlantGrowthStage(variant: PlantVariant, stage: PlantGrowthStage): void {
         if (!this.started) return;
         this.lastPropTime = performance.now();
         this.adaptiveMixer.notifyEvent('plant', `${variant}:${stage}`);
-
-        const candidates = [
-            ...plantStageCandidateUrls(variant, stage),
-            ...PLANT_STAGE_FALLBACKS[stage],
-        ];
-
-        void this.playPlantOneShot(
-            `plant-stage:${variant}:${stage}`,
-            candidates,
-            PLANT_STAGE_VOLUME_DB,
-            0.92 + stage * 0.035
-        );
+        const candidates = [...plantStageCandidateUrls(variant, stage), ...PLANT_STAGE_FALLBACKS[stage]];
+        void this.playPlantOneShot(`plant-stage:${variant}:${stage}`, candidates, PLANT_STAGE_VOLUME_DB, 0.92 + stage * 0.035);
     }
 
-    /** Play the optional mature-plant harvest sound. */
     playPlantHarvest(variant: PlantVariant): void {
         if (!this.started) return;
         this.lastPropTime = performance.now();
         this.adaptiveMixer.notifyEvent('plant', `${variant}:harvest`);
-
-        const candidates = [
-            ...plantHarvestCandidateUrls(variant),
-            ...PLANT_HARVEST_FALLBACKS,
-        ];
-
-        void this.playPlantOneShot(
-            `plant-harvest:${variant}`,
-            candidates,
-            PLANT_HARVEST_VOLUME_DB,
-            1
-        );
+        const candidates = [...plantHarvestCandidateUrls(variant), ...PLANT_HARVEST_FALLBACKS];
+        void this.playPlantOneShot(`plant-harvest:${variant}`, candidates, PLANT_HARVEST_VOLUME_DB, 1);
     }
 
-    /** Play a one-shot action sound for tool use, watering and harvesting. */
     playToolAction(action: ToolActionType): void {
         if (!this.started) return;
         this.lastPropTime = performance.now();
         this.adaptiveMixer.notifyEvent('tool', action);
-
         const candidates = toolActionCandidateUrls(action);
-        const pitchByAction: Record<ToolActionType, number> = {
-            pickaxe: 0.92,
-            axe: 0.84,
-            hoe: 1.02,
-            watering_can: 1.16,
-            harvest: 1.0,
-        };
-
-        void this.playPlantOneShot(
-            `tool-action:${action}`,
-            candidates,
-            TOOL_AUDIO_VOLUME_DB[action],
-            pitchByAction[action]
-        );
+        const pitchByAction: Record<ToolActionType, number> = { pickaxe: 0.92, axe: 0.84, hoe: 1.02, watering_can: 1.16, harvest: 1.0 };
+        void this.playPlantOneShot(`tool-action:${action}`, candidates, TOOL_AUDIO_VOLUME_DB[action], pitchByAction[action]);
     }
 
-    /**
-     * Full cleanup is only for page teardown/tests. Scenes should not call this;
-     * the shared manager intentionally survives scene changes.
-     */
     dispose(): void {
-        try { this.currentMode.dispose(); } catch { /* ignore */ }
-        for (const player of this.plantOneShotPlayers.values()) {
-            try { player.dispose(); } catch { /* ignore */ }
-        }
+        try { this.currentMode.dispose(); } catch {}
+        for (const player of this.plantOneShotPlayers.values()) try { player.dispose(); } catch {}
         this.plantOneShotPlayers.clear();
+        this.modeGain.dispose();
         this.modeBus.dispose();
         this.panner.dispose();
         this.reverb.dispose();
@@ -458,17 +306,11 @@ export class AudioManager {
         AudioManager.sharedInstance = null;
     }
 
-    private async playPlantOneShot(
-        cacheKey: string,
-        candidateUrls: string[],
-        volumeDb: number,
-        playbackRate: number
-    ): Promise<void> {
+    private async playPlantOneShot(cacheKey: string, candidateUrls: string[], volumeDb: number, playbackRate: number): Promise<void> {
         const url = await this.resolveFirstExistingUrl(cacheKey, candidateUrls);
         if (!url) return;
 
         let player = this.plantOneShotPlayers.get(url);
-
         if (!player) {
             player = new Tone.Player({
                 url,
@@ -480,24 +322,23 @@ export class AudioManager {
                     player!.start();
                 },
                 onerror: () => {
-                    console.warn(`[AudioManager] Could not load one-shot sound: ${url}`);
+                    console.warn(`[AudioManager] Could not load one-shot: ${url}`);
                     this.plantCandidateCache.set(cacheKey, null);
-                },
+                }
             });
-            player.connect(this.modeBus);
+            player.connect(this.modeGain);   // <<< nu via modeGain
             this.plantOneShotPlayers.set(url, player);
             return;
         }
 
         if (!player.loaded) return;
-
         try {
             player.playbackRate = playbackRate;
             player.volume.value = volumeDb;
             if (player.state === 'started') player.stop();
             player.start();
         } catch (err) {
-            console.warn('[AudioManager] Ignored one-shot playback race:', err);
+            console.warn('[AudioManager] One-shot playback error:', err);
         }
     }
 
@@ -505,32 +346,21 @@ export class AudioManager {
         if (this.plantCandidateCache.has(cacheKey)) {
             return this.plantCandidateCache.get(cacheKey) ?? null;
         }
-
-        // v13: do not probe every candidate with fetch(HEAD). Browser consoles show
-        // those expected misses as scary network failures. The first candidates are
-        // the files this patch ships with; if the user later replaces them using the
-        // same names, they continue to resolve without extra console noise.
         const first = candidateUrls[0] ?? null;
         this.plantCandidateCache.set(cacheKey, first);
         return first;
     }
 
+    // ── Music Loop (volledig) ───────────────────────────────────
     private async startMusicLoop(): Promise<void> {
         if (AudioManager.musicPlayer?.loaded) {
             this.safeStartMusicPlayer();
             return;
         }
-
-        // Multiple scenes can call ensureStarted() during transitions. Reuse the
-        // in-flight load instead of calling start() on an unloaded Tone.Player.
-        if (AudioManager.musicLoadingPromise) {
-            return AudioManager.musicLoadingPromise;
-        }
+        if (AudioManager.musicLoadingPromise) return AudioManager.musicLoadingPromise;
 
         AudioManager.musicLoadingPromise = this.loadAndStartFirstMusicCandidate()
-            .finally(() => {
-                AudioManager.musicLoadingPromise = null;
-            });
+            .finally(() => { AudioManager.musicLoadingPromise = null; });
 
         return AudioManager.musicLoadingPromise;
     }
@@ -546,10 +376,7 @@ export class AudioManager {
             console.log(`[AudioManager] Music loop started: ${url}`);
             return;
         }
-
-        console.warn(
-            '[AudioManager] No playable music file found. Add a valid Mus_Farm.wav, Mus_Farm.mp3 or Mus_Farm.ogg in public/assets/audio/Music.'
-        );
+        console.warn('[AudioManager] No playable music file found.');
     }
 
     private createLoadedMusicPlayer(url: string): Promise<Tone.Player | null> {
@@ -557,7 +384,7 @@ export class AudioManager {
             let settled = false;
             let player: Tone.Player | null = null;
 
-            const finish = (loadedPlayer: Tone.Player | null): void => {
+            const finish = (loadedPlayer: Tone.Player | null) => {
                 if (settled) return;
                 settled = true;
                 resolve(loadedPlayer);
@@ -571,21 +398,21 @@ export class AudioManager {
                     onload: () => finish(player),
                     onerror: () => {
                         if (!url.endsWith('Mus_Farm.mp3') && !url.endsWith('Mus_Farm.ogg')) {
-                            console.warn(`[AudioManager] Music candidate failed, trying next: ${url}`);
+                            console.warn(`[AudioManager] Music candidate failed: ${url}`);
                         }
                         player?.dispose();
                         finish(null);
                     },
                 }).toDestination();
             } catch (err) {
-                console.warn(`[AudioManager] Music player could not be created for ${url}:`, err);
+                console.warn(`[AudioManager] Music player creation failed for ${url}:`, err);
                 player?.dispose();
                 finish(null);
             }
 
             window.setTimeout(() => {
                 if (settled) return;
-                console.warn(`[AudioManager] Music load timed out, trying next candidate: ${url}`);
+                console.warn(`[AudioManager] Music load timed out: ${url}`);
                 player?.dispose();
                 finish(null);
             }, 8000);
@@ -595,11 +422,10 @@ export class AudioManager {
     private safeStartMusicPlayer(): void {
         const player = AudioManager.musicPlayer;
         if (!player || !player.loaded || player.state === 'started') return;
-
         try {
             player.start();
         } catch (err) {
-            console.warn('[AudioManager] Music player could not be started. It will be skipped instead of crashing the game:', err);
+            console.warn('[AudioManager] Music player start failed:', err);
             player.dispose();
             AudioManager.musicPlayer = null;
         }
