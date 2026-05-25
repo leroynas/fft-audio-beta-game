@@ -280,7 +280,7 @@ export class GameScene extends Phaser.Scene {
         };
 
         if (!this.textures.exists('player')) {
-            this.load.spritesheet('player', 'assets/sprites/player_spritesheet.png', {
+            this.load.spritesheet('player', 'assets/sprites/Characters/player_spritesheet.png', {
                 frameWidth: 32,
                 frameHeight: 32,
             });
@@ -291,8 +291,8 @@ export class GameScene extends Phaser.Scene {
         // hard-coded extension here; that creates Phaser processing warnings
         // whenever the user replaces e.g. stone.jpeg with stone.png.
 
-        loadImageOnce('object-house', '/assets/objects/Main_House.png');
-        loadImageOnce('object-store', '/assets/objects/Store_Building.png');
+        loadImageOnce('object-house', '/assets/objects/Main_House/Main_House.png');
+        loadImageOnce('object-store', '/assets/objects/main_Store/Store_Building_Seeds.png');
         loadImageOnce('planter-big', '/assets/sprites/Plants/planter/planter_big.png');
         loadImageOnce('planter-small', '/assets/sprites/Plants/planter/planter_small.png');
 
@@ -580,10 +580,10 @@ export class GameScene extends Phaser.Scene {
 
     private applyReplaceableOutdoorTiles(): void {
         const replacements: { type: FloorZone['type']; key: string; base: string }[] = [
-            { type: 'grass', key: 'tile-grass-custom', base: '/assets/tiles/grass' },
-            { type: 'sand', key: 'tile-sand-custom', base: '/assets/tiles/sand' },
-            { type: 'water', key: 'tile-water-custom', base: '/assets/tiles/water' },
-            { type: 'stone', key: 'tile-stone-path-custom', base: '/assets/tiles/stone' },
+            { type: 'grass', key: 'tile-grass-custom', base: '/assets/tiles/grass/grass' },
+            { type: 'sand', key: 'tile-sand-custom', base: '/assets/tiles/beach/sand' },
+            { type: 'water', key: 'tile-water-custom', base: '/assets/tiles/beach/water' },
+            { type: 'stone', key: 'tile-stone-path-custom', base: '/assets/tiles/path/stone' },
         ];
 
         for (const item of replacements) {

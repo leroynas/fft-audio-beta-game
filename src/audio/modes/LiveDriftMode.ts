@@ -13,12 +13,12 @@ import { PerformerState } from '../PerformerState';
 import { FloorType, PropType } from '../../types';
 
 const FOOTSTEP_SAMPLES: Record<FloorType, string[]> = {
-    grass: ['/assets/audio/footsteps/wood_01.mp3'],
-    sand: ['/assets/audio/footsteps/gravel_01.mp3'],
-    water: ['/assets/audio/footsteps/stone_01.mp3'],
-    stone: ['/assets/audio/footsteps/stone_01.mp3'],
-    wood: ['/assets/audio/footsteps/wood_01.mp3'],
-    gravel: ['/assets/audio/footsteps/gravel_01.mp3'],
+    grass: ['/assets/audio/footsteps/wood/wood_01.mp3'],
+    sand: ['/assets/audio/footsteps/gravel/gravel_01.mp3'],
+    water: ['/assets/audio/footsteps/stone/stone_01.mp3'],
+    stone: ['/assets/audio/footsteps/stone/stone_01.mp3'],
+    wood: ['/assets/audio/footsteps/wood/wood_01.mp3'],
+    gravel: ['/assets/audio/footsteps/gravel/gravel_01.mp3'],
 };
 
 const PROP_SAMPLES: Record<PropType, string[]> = {
