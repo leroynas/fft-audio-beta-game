@@ -286,10 +286,24 @@ export class AudioManager {
         this.adaptiveMixer.footstepsActive = (now - this.lastFootstepTime) < 320;
         this.adaptiveMixer.propActive = (now - this.lastPropTime) < 420;
 
-        const targetWet = REVERB_WET_TARGETS[floor] ?? 0.15;
-        this.reverbWet += (targetWet - this.reverbWet) * REVERB_LERP;
-        this.reverb.wet.value = this.reverbWet;
+        // Environmental reverb from the world itself
+        const floorWet = REVERB_WET_TARGETS[floor] ?? 0.15;
 
+        // Performer wetness drift contribution
+        // (0–1 performer value mapped into a musically useful range)
+        const performerWet =
+            0.05 + this.performerState.wetness * 0.45;
+
+        // Blend environment + performer identity
+        const targetWet =
+            floorWet * 0.55 +
+            performerWet * 0.45;
+
+        // Smooth drift over time
+        this.reverbWet += (targetWet - this.reverbWet) * REVERB_LERP;
+
+        this.reverb.wet.value = this.reverbWet;
+        
         this.adaptiveMixer.update();
     }
 
