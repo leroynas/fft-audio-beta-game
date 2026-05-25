@@ -24,8 +24,8 @@ import { extensionCandidates, loadFirstAvailableImageTexture } from '../utils/Te
 // ── World configuration ──────────────────────────────────────
 
 /** Village-sized outdoor map: more lower grass space before the beach for future houses/props. */
-const WORLD_W = 1900;
-const WORLD_H = 1500;
+const WORLD_W = 3400;
+const WORLD_H = 2200;
 
 const HOUSE_X = 1050;
 const HOUSE_Y = 520;
@@ -41,7 +41,13 @@ const PATH_W = 56;
 // The horizontal path now starts at the actual front/bottom edge of the
 // building sprites, so the stone visually locks to the porch instead of
 // floating a few pixels below it.
-const MAIN_PATH_Y = HOUSE_Y - 2;
+const MAIN_PATH_Y = HOUSE_Y;
+const NORTH_ROW_PATH_Y = 190;
+const SOUTH_ROW_PATH_Y = 1050;
+const WEST_VILLAGE_PATH_X = 220;
+const MID_VILLAGE_PATH_X = 1460;
+const EAST_VILLAGE_PATH_X = 2350;
+const FAR_VILLAGE_PATH_X = 3180;
 
 const PLANT_COLUMN_SPACING = 118;
 const PLANT_ROW_SPACING = 120;
@@ -63,8 +69,8 @@ const PLANT_GRID_LEFT = PLANT_AREA_X - PLANT_COLUMN_SPACING - PLANT_BED_W / 2 - 
 const PLANT_GRID_RIGHT = PLANT_AREA_X + PLANT_COLUMN_SPACING + PLANT_BED_W / 2 + PLANT_STONE_MARGIN;
 const PLANT_GRID_BOTTOM = PLANT_ROW_Y2 + PLANT_BED_Y_OFFSET + PLANT_BED_H / 2 + PLANT_STONE_MARGIN;
 
-const GRASS_END_Y = 1060;
-const SAND_END_Y = 1260;
+const GRASS_END_Y = 1480;
+const SAND_END_Y = 1740;
 const WATER_START_Y = SAND_END_Y;
 
 const PLAYER_START_X = HOUSE_X;
@@ -90,8 +96,8 @@ const BASE_FLOOR_ZONES: FloorZone[] = [
 
 /** Stone path overlays. These are checked before base zones for footstep logic. */
 const PATH_ZONES: FloorZone[] = [
-    // Clean shop → house path. It sits exactly on the buildings' front edge
-    // and remains one tight strip: no loose side tiles next to the house.
+    // Main shop → house path. All co-ordinates are integer-aligned and use the
+    // same width so the stone texture keeps a clean grid without odd overlaps.
     {
         x: STORE_X - PATH_W / 2,
         y: MAIN_PATH_Y,
@@ -100,19 +106,72 @@ const PATH_ZONES: FloorZone[] = [
         type: 'stone',
         color: 0x8a8272,
     },
-    // House → beach path. Same width as the village path, aligned to the
-    // centre of the house door.
+    // Northern village road. Houses above the main buildings connect here, but
+    // this road stays in the grass/village area only.
+    {
+        x: 160,
+        y: NORTH_ROW_PATH_Y,
+        width: 3100,
+        height: PATH_W,
+        type: 'stone',
+        color: 0x8a8272,
+    },
+    // Southern village road stops before the sand/beach transition. No stone
+    // walkway is drawn on the beach itself.
+    {
+        x: 160,
+        y: SOUTH_ROW_PATH_Y,
+        width: 3100,
+        height: PATH_W,
+        type: 'stone',
+        color: 0x8a8272,
+    },
+    {
+        x: WEST_VILLAGE_PATH_X - PATH_W / 2,
+        y: NORTH_ROW_PATH_Y,
+        width: PATH_W,
+        height: SOUTH_ROW_PATH_Y - NORTH_ROW_PATH_Y + PATH_W,
+        type: 'stone',
+        color: 0x8a8272,
+    },
+    {
+        x: MID_VILLAGE_PATH_X - PATH_W / 2,
+        y: NORTH_ROW_PATH_Y,
+        width: PATH_W,
+        height: SOUTH_ROW_PATH_Y - NORTH_ROW_PATH_Y + PATH_W,
+        type: 'stone',
+        color: 0x8a8272,
+    },
+    {
+        x: EAST_VILLAGE_PATH_X - PATH_W / 2,
+        y: NORTH_ROW_PATH_Y,
+        width: PATH_W,
+        height: SOUTH_ROW_PATH_Y - NORTH_ROW_PATH_Y + PATH_W,
+        type: 'stone',
+        color: 0x8a8272,
+    },
+    // Far path now stops in the grass before the beach. The beach-side house is
+    // intentionally not connected by stone so sand stays sand.
+    {
+        x: FAR_VILLAGE_PATH_X - PATH_W / 2,
+        y: NORTH_ROW_PATH_Y,
+        width: PATH_W,
+        height: GRASS_END_Y - NORTH_ROW_PATH_Y - PATH_W,
+        type: 'stone',
+        color: 0x8a8272,
+    },
+    // House downward route also stops before the sand line. This keeps the
+    // beach visually clean and avoids stone tiles cutting through the shore.
     {
         x: BEACH_PATH_X - PATH_W / 2,
         y: MAIN_PATH_Y,
         width: PATH_W,
-        height: WATER_START_Y - MAIN_PATH_Y,
+        height: GRASS_END_Y - MAIN_PATH_Y - PATH_W,
         type: 'stone',
         color: 0x8a8272,
     },
     // Filled farm-stone area from the house path down through the whole
-    // planter grid. This makes the farming patch feel connected to the house
-    // instead of being a separate island with a thin connector.
+    // planter grid. It remains in the grass area and aligns with the main path.
     {
         x: PLANT_GRID_LEFT,
         y: MAIN_PATH_Y,
@@ -164,6 +223,18 @@ const EXTRA_PROPS: PropConfig[] = [
         buildingVariant: 'store',
         targetScene: 'StoreScene',
     },
+
+    // Structural village placeholders. They are spread across the map now,
+    // including one near the beach, so the outdoor scene reads more like a
+    // village that can keep expanding later.
+    { x: 220,  y: 190,  type: 'building', label: 'Village House', buildingVariant: 'house' },
+    { x: 1460, y: 190,  type: 'building', label: 'Village House', buildingVariant: 'house' },
+    { x: 2350, y: 190,  type: 'building', label: 'Village House', buildingVariant: 'house' },
+    { x: 3180, y: 190,  type: 'building', label: 'Village House', buildingVariant: 'house' },
+    { x: 3180, y: 720,  type: 'building', label: 'Future Store',   buildingVariant: 'store' },
+    { x: 220,  y: 1050, type: 'building', label: 'Village House', buildingVariant: 'house' },
+    { x: 1820, y: 1050, type: 'building', label: 'Village House', buildingVariant: 'house' },
+    { x: 1460, y: 1510, type: 'building', label: 'Beach House',   buildingVariant: 'house' },
 
     // Small planting plot in the grass corridor between the shop and the house.
     // The x-axis alignment is kept, with stone aisles between/around the planters.
@@ -326,7 +397,7 @@ export class GameScene extends Phaser.Scene {
         this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
         this.cameras.main.setZoom(this.cameraZoom);
 
-        this.audioManager = new AudioManager();
+        this.audioManager = AudioManager.getShared();
 
         for (const prop of this.props) {
             if (prop.type === 'plant') {
@@ -647,13 +718,9 @@ export class GameScene extends Phaser.Scene {
         gfx.strokePath();
     }
 
-    /** Slight dark outline on paths so they read as purposeful, straight routes. */
+    /** No stroke rectangles: overlapping path pieces must merge smoothly. */
     private drawPathEdges(): void {
-        const gfx = this.add.graphics().setDepth(0.9);
-        gfx.lineStyle(2, 0x2a261e, 0.18);
-        for (const zone of PATH_ZONES) {
-            gfx.strokeRect(zone.x, zone.y, zone.width, zone.height);
-        }
+        // Intentionally empty. The texture and rectangular geometry provide the edge.
     }
 
     /** Places small solid planter sprites in the centre grass corridor before plant props are drawn. */
@@ -724,7 +791,7 @@ export class GameScene extends Phaser.Scene {
         if (Math.abs(nextZoom - this.cameraZoom) < 0.001) return;
 
         this.cameraZoom = nextZoom;
-        this.cameras.main.zoomTo(this.cameraZoom, 140, 'Sine.easeOut');
+        this.cameras.main.setZoom(this.cameraZoom);
     }
 
     private tryUnlockAudio(): void {

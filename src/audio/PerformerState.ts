@@ -13,7 +13,7 @@
  * │  Its five dimensions drift slowly via exponential lerp, responding  │
  * │  to gameplay input (velocity, surface) but never snapping.  This   │
  * │  creates the sensation of ONE continuous performer in ONE session   │
- * │  rather than a slot machine of disconnected samples.                │
+ * │  rather than unrelated disconnected samples.                │
  * └─────────────────────────────────────────────────────────────────────┘
  *
  * All properties are normalised 0–1. The lerp factor is deliberately

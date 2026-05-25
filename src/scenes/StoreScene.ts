@@ -11,7 +11,9 @@
 import Phaser from 'phaser';
 import { Player } from '../entities/Player';
 import { FarmState, SEED_CATALOG, SeedDefinition } from '../gameData';
-import { FloorZone, PlantVariant } from '../types';
+import { FloorZone, PlantVariant, ToolType } from '../types';
+import { AudioManager } from '../audio/AudioManager';
+import { UI } from '../utils/UI';
 import {
     extensionCandidates,
     loadFirstAvailableImageTexture,
@@ -26,6 +28,15 @@ const TILE = 42;
 const FLOOR_TOP = 255;
 const EXIT_W = 112;
 const EXIT_H = 36;
+const STEP_DISTANCE = 48;
+const DEFAULT_TOOL: ToolType = 'hoe';
+const TOOL_ORDER: ToolType[] = ['pickaxe', 'axe', 'hoe', 'watering_can'];
+const TOOL_HOTKEYS: { keyCode: number; tool: ToolType }[] = [
+    { keyCode: Phaser.Input.Keyboard.KeyCodes.ONE,   tool: 'pickaxe' },
+    { keyCode: Phaser.Input.Keyboard.KeyCodes.TWO,   tool: 'axe' },
+    { keyCode: Phaser.Input.Keyboard.KeyCodes.THREE, tool: 'hoe' },
+    { keyCode: Phaser.Input.Keyboard.KeyCodes.FOUR,  tool: 'watering_can' },
+];
 
 const STORE_FLOOR_FALLBACK_KEY = 'store-floor-fallback-tile';
 const STORE_WALL_FALLBACK_KEY = 'store-wall-fallback-tile';
@@ -66,6 +77,14 @@ export class StoreScene extends Phaser.Scene {
     private buyKeys: Phaser.Input.Keyboard.Key[] = [];
     private keyE!: Phaser.Input.Keyboard.Key;
     private keyEsc!: Phaser.Input.Keyboard.Key;
+    private keyM!: Phaser.Input.Keyboard.Key;
+    private keyTab!: Phaser.Input.Keyboard.Key;
+    private audioManager!: AudioManager;
+    private ui!: UI;
+    private currentTool: ToolType = DEFAULT_TOOL;
+    private toolKeyBindings: { key: Phaser.Input.Keyboard.Key; tool: ToolType }[] = [];
+    private cameraZoom = 1.0;
+    private audioUnlocked = false;
     private returnSpawn?: ReturnSpawn;
     private floorTileSprites: Phaser.GameObjects.TileSprite[] = [];
     private wallTileSprites: Phaser.GameObjects.TileSprite[] = [];
@@ -101,6 +120,10 @@ export class StoreScene extends Phaser.Scene {
         this.wallTileSprites = [];
         this.floorZones = [];
         this.counterCollider = undefined;
+        this.currentTool = DEFAULT_TOOL;
+        this.toolKeyBindings = [];
+        this.cameraZoom = 1.0;
+        this.audioUnlocked = false;
 
         this.cameras.main.setBackgroundColor('#17110b');
         this.ensureFallbackTextures();
@@ -108,19 +131,27 @@ export class StoreScene extends Phaser.Scene {
         this.applyReplaceableTiles();
         this.drawCounterNpc();
         this.createPlayer();
+        this.cameras.main.setZoom(this.cameraZoom);
+        this.audioManager = AudioManager.getShared();
+        this.ui = new UI(this, (tool) => this.selectTool(tool, true), (direction) => this.adjustCameraZoom(direction));
         this.createControls();
         this.refreshHud();
     }
 
-    update(): void {
+    update(_time: number, delta: number): void {
         if (!this.player) return;
 
         if (this.shopOpen) {
             this.stopPlayerBody();
+            this.audioManager.updatePerformer(delta / 1000, 0, this.player.currentFloorType);
 
             if (Phaser.Input.Keyboard.JustDown(this.keyE) || Phaser.Input.Keyboard.JustDown(this.keyEsc)) {
                 this.closeShop();
                 return;
+            }
+
+            if (Phaser.Input.Keyboard.JustDown(this.keyTab)) {
+                this.ui.toggleInventory();
             }
 
             for (let i = 0; i < this.buyKeys.length; i++) {
@@ -129,10 +160,28 @@ export class StoreScene extends Phaser.Scene {
                     break;
                 }
             }
+
+            this.ui.update(
+                this.audioManager.getModeName(),
+                this.player.currentFloorType,
+                this.audioManager.getMixerSnapshot(),
+                this.audioManager.seed,
+                this.currentTool
+            );
             return;
         }
 
         this.player.update(this.floorZones);
+
+        const deltaSec = delta / 1000;
+        this.audioManager.updatePerformer(deltaSec, this.player.speed, this.player.currentFloorType);
+        const body = this.player.sprite.body as Phaser.Physics.Arcade.Body;
+        this.audioManager.updatePanning(body.velocity.x, 200);
+
+        if (this.player.isMoving && this.player.distanceSinceStep >= STEP_DISTANCE) {
+            this.audioManager.playFootstep(this.player.currentFloorType);
+            this.player.resetStepDistance();
+        }
 
         const nearCounter = this.isPlayerInside(this.counterInteractZone);
         const nearExit = this.isPlayerInside(this.exitZone);
@@ -150,6 +199,30 @@ export class StoreScene extends Phaser.Scene {
         if (Phaser.Input.Keyboard.JustDown(this.keyE) && nearCounter) {
             this.openShop();
         }
+
+        if (Phaser.Input.Keyboard.JustDown(this.keyM)) {
+            const next = this.audioManager.getModeName() === 'classic' ? 'live' : 'classic';
+            void this.audioManager.switchMode(next);
+        }
+
+        if (Phaser.Input.Keyboard.JustDown(this.keyTab)) {
+            this.ui.toggleInventory();
+        }
+
+        for (const binding of this.toolKeyBindings) {
+            if (Phaser.Input.Keyboard.JustDown(binding.key)) {
+                this.selectTool(binding.tool, true);
+                break;
+            }
+        }
+
+        this.ui.update(
+            this.audioManager.getModeName(),
+            this.player.currentFloorType,
+            this.audioManager.getMixerSnapshot(),
+            this.audioManager.seed,
+            this.currentTool
+        );
     }
 
     private drawPixelStoreInterior(): void {
@@ -202,7 +275,7 @@ export class StoreScene extends Phaser.Scene {
             strokeThickness: 4,
             backgroundColor: '#5a341bee',
             padding: { x: 12, y: 7 },
-        }).setOrigin(1, 0).setDepth(130);
+        }).setOrigin(1, 0).setDepth(130).setVisible(false);
 
         const exitX = cx;
         const exitY = h - 36;
@@ -226,28 +299,36 @@ export class StoreScene extends Phaser.Scene {
 
     private drawCounterNpc(): void {
         const cx = this.scale.width / 2;
-        const counterY = 286;
+        const counterY = 326;
 
-        // Leroy stands behind a lower counter: grounded on the shop floor,
-        // with his head/shoulders visible above the front plank.
+        // Counter back/top first, then Leroy, then lower front plank. This keeps
+        // him clearly behind the counter while his head and shoulders remain
+        // visible instead of being hidden by a too-tall counter rectangle.
+        this.add.rectangle(cx, counterY - 34, 600, 20, 0xc28745, 1)
+            .setStrokeStyle(2, 0xf1bf6d, 0.72)
+            .setDepth(20);
+        this.add.rectangle(cx, counterY - 8, 580, 54, 0x7b4a25, 0.82)
+            .setStrokeStyle(3, 0x2c1509, 0.84)
+            .setDepth(16);
+
         const npcX = cx - 190;
-        this.drawNpcAt('leroy', npcX, counterY + 36);
+        this.drawNpcAt('leroy', npcX, counterY + 18);
 
-        this.add.rectangle(cx, counterY, 580, 86, 0x7b4a25, 1)
+        this.add.rectangle(cx, counterY + 28, 590, 58, 0x7b4a25, 1)
             .setStrokeStyle(4, 0x2c1509, 1)
             .setDepth(22);
-        this.add.rectangle(cx, counterY - 42, 600, 18, 0xc28745, 1)
-            .setStrokeStyle(2, 0xf1bf6d, 0.7)
-            .setDepth(23);
-        this.add.rectangle(cx, counterY + 14, 540, 5, 0x4a2814, 0.65).setDepth(24);
+        this.add.rectangle(cx, counterY + 5, 600, 14, 0xd39b4d, 1)
+            .setStrokeStyle(2, 0xf1bf6d, 0.75)
+            .setDepth(24);
+        this.add.rectangle(cx, counterY + 34, 540, 5, 0x4a2814, 0.65).setDepth(25);
 
-        this.counterCollider = this.add.rectangle(cx, counterY + 6, 600, 92, 0xff0000, 0)
+        this.counterCollider = this.add.rectangle(cx, counterY + 30, 600, 70, 0xff0000, 0)
             .setDepth(21);
         this.physics.add.existing(this.counterCollider, true);
 
-        this.counterInteractZone = new Phaser.Geom.Rectangle(cx - 320, counterY + 40, 640, 116);
+        this.counterInteractZone = new Phaser.Geom.Rectangle(cx - 320, counterY + 40, 640, 118);
 
-        this.dialogueText = this.add.text(cx, counterY + 78,
+        this.dialogueText = this.add.text(cx, counterY + 92,
             'Leroy: Welcome to the seed shop.',
             {
                 fontSize: '15px',
@@ -260,7 +341,7 @@ export class StoreScene extends Phaser.Scene {
             }
         ).setOrigin(0.5).setDepth(80);
 
-        this.promptText = this.add.text(cx, counterY + 118, '', {
+        this.promptText = this.add.text(cx, counterY + 126, '', {
             fontSize: '13px',
             color: '#ffee77',
             fontFamily: 'monospace',
@@ -269,14 +350,13 @@ export class StoreScene extends Phaser.Scene {
         }).setOrigin(0.5).setAlpha(0).setVisible(false).setDepth(90);
     }
 
-
     private drawNpcAt(npcId: NpcId, x: number, groundY: number): void {
         const cfg = NPC_SPRITESHEETS[npcId];
-        const fallbackHead = this.add.circle(x, groundY - 58, 18, 0xffcf92, 1).setDepth(18);
+        const fallbackHead = this.add.circle(x, groundY - 58, 18, 0xffcf92, 1).setDepth(23);
         const fallbackBody = this.add.rectangle(x, groundY - 22, 36, 52, 0x4f7fd8, 1)
             .setStrokeStyle(2, 0x1a2a4a, 0.9)
             .setDepth(17);
-        const fallbackHair = this.add.rectangle(x, groundY - 75, 42, 10, 0x2c1b10, 1).setDepth(19);
+        const fallbackHair = this.add.rectangle(x, groundY - 75, 42, 10, 0x2c1b10, 1).setDepth(24);
         const fallbackParts: Phaser.GameObjects.GameObject[] = [fallbackHead, fallbackBody, fallbackHair];
 
         this.tweens.add({
@@ -301,7 +381,7 @@ export class StoreScene extends Phaser.Scene {
                 const npc = this.add.sprite(x, groundY, textureKey, 0)
                     .setOrigin(0.5, 1)
                     .setScale(2.1)
-                    .setDepth(18);
+                    .setDepth(23);
 
                 // Very subtle idle: Leroy mostly chills behind the counter and
                 // occasionally shifts his head. Works with the same 32x32 sheet
@@ -338,6 +418,9 @@ export class StoreScene extends Phaser.Scene {
     private createControls(): void {
         this.keyE = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.E);
         this.keyEsc = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.ESC);
+        this.keyM = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.M);
+        this.keyTab = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.TAB);
+        this.input.keyboard!.addCapture(Phaser.Input.Keyboard.KeyCodes.TAB);
         this.buyKeys = [
             Phaser.Input.Keyboard.KeyCodes.ONE,
             Phaser.Input.Keyboard.KeyCodes.TWO,
@@ -347,6 +430,42 @@ export class StoreScene extends Phaser.Scene {
             Phaser.Input.Keyboard.KeyCodes.SIX,
             Phaser.Input.Keyboard.KeyCodes.SEVEN,
         ].map((keyCode) => this.input.keyboard!.addKey(keyCode));
+        this.toolKeyBindings = TOOL_HOTKEYS.map((binding) => ({
+            key: this.input.keyboard!.addKey(binding.keyCode),
+            tool: binding.tool,
+        }));
+        this.input.keyboard!.on('keydown', () => this.tryUnlockAudio());
+        this.input.on('pointerdown', () => this.tryUnlockAudio());
+        this.input.on('wheel', (_pointer: Phaser.Input.Pointer, _objects: Phaser.GameObjects.GameObject[], _dx: number, dy: number) => {
+            this.cycleTool(dy > 0 ? 1 : -1);
+        });
+    }
+
+    private selectTool(tool: ToolType, playSound = false): void {
+        if (this.currentTool === tool) return;
+        this.currentTool = tool;
+        if (playSound) this.audioManager.playToolAction(tool);
+    }
+
+    private cycleTool(direction: number): void {
+        const index = TOOL_ORDER.indexOf(this.currentTool);
+        const nextIndex = (index + direction + TOOL_ORDER.length) % TOOL_ORDER.length;
+        this.selectTool(TOOL_ORDER[nextIndex], true);
+    }
+
+    private adjustCameraZoom(direction: number): void {
+        const nextZoom = Phaser.Math.Clamp(this.cameraZoom + direction * 0.25, 0.32, 3.0);
+        if (Math.abs(nextZoom - this.cameraZoom) < 0.001) return;
+        this.cameraZoom = nextZoom;
+        this.cameras.main.setZoom(this.cameraZoom);
+    }
+
+    private tryUnlockAudio(): void {
+        if (this.audioUnlocked) return;
+        this.audioUnlocked = true;
+        void this.audioManager.ensureStarted().catch((err) => {
+            console.warn('[StoreScene] Audio could not be started:', err);
+        });
     }
 
     private isPlayerInside(rect: Phaser.Geom.Rectangle): boolean {

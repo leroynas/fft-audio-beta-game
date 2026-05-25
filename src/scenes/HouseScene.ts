@@ -9,7 +9,9 @@
  */
 import Phaser from 'phaser';
 import { Player } from '../entities/Player';
-import { FloorZone } from '../types';
+import { FloorZone, ToolType } from '../types';
+import { AudioManager } from '../audio/AudioManager';
+import { UI } from '../utils/UI';
 import { extensionCandidates, loadFirstAvailableImageTexture } from '../utils/TextureResolver';
 
 const ROOM_W = 760;
@@ -18,6 +20,15 @@ const WALL_H = 96;
 const TILE = 42;
 const EXIT_W = 90;
 const EXIT_H = 34;
+const STEP_DISTANCE = 48;
+const DEFAULT_TOOL: ToolType = 'hoe';
+const TOOL_ORDER: ToolType[] = ['pickaxe', 'axe', 'hoe', 'watering_can'];
+const TOOL_HOTKEYS: { keyCode: number; tool: ToolType }[] = [
+    { keyCode: Phaser.Input.Keyboard.KeyCodes.ONE,   tool: 'pickaxe' },
+    { keyCode: Phaser.Input.Keyboard.KeyCodes.TWO,   tool: 'axe' },
+    { keyCode: Phaser.Input.Keyboard.KeyCodes.THREE, tool: 'hoe' },
+    { keyCode: Phaser.Input.Keyboard.KeyCodes.FOUR,  tool: 'watering_can' },
+];
 
 const HOUSE_FLOOR_FALLBACK_KEY = 'house-floor-fallback-tile';
 const HOUSE_WALL_FALLBACK_KEY = 'house-wall-fallback-tile';
@@ -34,6 +45,14 @@ export class HouseScene extends Phaser.Scene {
     private keyEsc!: Phaser.Input.Keyboard.Key;
     private exitZone!: Phaser.Geom.Rectangle;
     private exitPrompt!: Phaser.GameObjects.Text;
+    private keyM!: Phaser.Input.Keyboard.Key;
+    private keyTab!: Phaser.Input.Keyboard.Key;
+    private audioManager!: AudioManager;
+    private ui!: UI;
+    private currentTool: ToolType = DEFAULT_TOOL;
+    private toolKeyBindings: { key: Phaser.Input.Keyboard.Key; tool: ToolType }[] = [];
+    private cameraZoom = 1.0;
+    private audioUnlocked = false;
     private floorZones: FloorZone[] = [];
     private returnSpawn?: ReturnSpawn;
     private floorTileSprites: Phaser.GameObjects.TileSprite[] = [];
@@ -54,19 +73,36 @@ export class HouseScene extends Phaser.Scene {
         this.returnSpawn = data.returnSpawn;
         this.floorTileSprites = [];
         this.wallTileSprites = [];
+        this.currentTool = DEFAULT_TOOL;
+        this.toolKeyBindings = [];
+        this.cameraZoom = 1.0;
+        this.audioUnlocked = false;
 
         this.cameras.main.setBackgroundColor('#0e1014');
         this.ensureFallbackTextures();
         this.drawWalkableInterior();
         this.applyReplaceableTiles();
         this.createPlayer();
+        this.cameras.main.setZoom(this.cameraZoom);
+        this.audioManager = AudioManager.getShared();
+        this.ui = new UI(this, (tool) => this.selectTool(tool, true), (direction) => this.adjustCameraZoom(direction));
         this.createControls();
     }
 
-    update(): void {
+    update(_time: number, delta: number): void {
         if (!this.player) return;
 
         this.player.update(this.floorZones);
+
+        const deltaSec = delta / 1000;
+        this.audioManager.updatePerformer(deltaSec, this.player.speed, this.player.currentFloorType);
+        const body = this.player.sprite.body as Phaser.Physics.Arcade.Body;
+        this.audioManager.updatePanning(body.velocity.x, 200);
+
+        if (this.player.isMoving && this.player.distanceSinceStep >= STEP_DISTANCE) {
+            this.audioManager.playFootstep(this.player.currentFloorType);
+            this.player.resetStepDistance();
+        }
 
         const insideExit = Phaser.Geom.Rectangle.Contains(
             this.exitZone,
@@ -78,7 +114,32 @@ export class HouseScene extends Phaser.Scene {
 
         if (insideExit || Phaser.Input.Keyboard.JustDown(this.keyEsc)) {
             this.exitToVillage();
+            return;
         }
+
+        if (Phaser.Input.Keyboard.JustDown(this.keyM)) {
+            const next = this.audioManager.getModeName() === 'classic' ? 'live' : 'classic';
+            void this.audioManager.switchMode(next);
+        }
+
+        if (Phaser.Input.Keyboard.JustDown(this.keyTab)) {
+            this.ui.toggleInventory();
+        }
+
+        for (const binding of this.toolKeyBindings) {
+            if (Phaser.Input.Keyboard.JustDown(binding.key)) {
+                this.selectTool(binding.tool, true);
+                break;
+            }
+        }
+
+        this.ui.update(
+            this.audioManager.getModeName(),
+            this.player.currentFloorType,
+            this.audioManager.getMixerSnapshot(),
+            this.audioManager.seed,
+            this.currentTool
+        );
     }
 
     private drawWalkableInterior(): void {
@@ -174,6 +235,45 @@ export class HouseScene extends Phaser.Scene {
 
     private createControls(): void {
         this.keyEsc = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.ESC);
+        this.keyM = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.M);
+        this.keyTab = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.TAB);
+        this.input.keyboard!.addCapture(Phaser.Input.Keyboard.KeyCodes.TAB);
+        this.toolKeyBindings = TOOL_HOTKEYS.map((binding) => ({
+            key: this.input.keyboard!.addKey(binding.keyCode),
+            tool: binding.tool,
+        }));
+        this.input.keyboard!.on('keydown', () => this.tryUnlockAudio());
+        this.input.on('pointerdown', () => this.tryUnlockAudio());
+        this.input.on('wheel', (_pointer: Phaser.Input.Pointer, _objects: Phaser.GameObjects.GameObject[], _dx: number, dy: number) => {
+            this.cycleTool(dy > 0 ? 1 : -1);
+        });
+    }
+
+    private selectTool(tool: ToolType, playSound = false): void {
+        if (this.currentTool === tool) return;
+        this.currentTool = tool;
+        if (playSound) this.audioManager.playToolAction(tool);
+    }
+
+    private cycleTool(direction: number): void {
+        const index = TOOL_ORDER.indexOf(this.currentTool);
+        const nextIndex = (index + direction + TOOL_ORDER.length) % TOOL_ORDER.length;
+        this.selectTool(TOOL_ORDER[nextIndex], true);
+    }
+
+    private adjustCameraZoom(direction: number): void {
+        const nextZoom = Phaser.Math.Clamp(this.cameraZoom + direction * 0.25, 0.32, 3.0);
+        if (Math.abs(nextZoom - this.cameraZoom) < 0.001) return;
+        this.cameraZoom = nextZoom;
+        this.cameras.main.setZoom(this.cameraZoom);
+    }
+
+    private tryUnlockAudio(): void {
+        if (this.audioUnlocked) return;
+        this.audioUnlocked = true;
+        void this.audioManager.ensureStarted().catch((err) => {
+            console.warn('[HouseScene] Audio could not be started:', err);
+        });
     }
 
     private exitToVillage(): void {

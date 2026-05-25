@@ -128,6 +128,13 @@ export class AdaptiveMixer {
 
     /** Frame counter for throttled updates */
     private frameCount = 0;
+    private displayPhase = 0;
+
+    /** Display/analysis pulse from short game-audio events. Decays quickly; no permanent fake wave. */
+    private eventPulse = 0;
+    private eventLow = 0.25;
+    private eventMid = 0.45;
+    private eventHigh = 0.35;
 
     /** The sample rate we're running at (cached once) */
     private sampleRate = 44100;
@@ -190,6 +197,30 @@ export class AdaptiveMixer {
         this.output.toDestination();
     }
 
+
+    /**
+     * Tell the analyser that a short event has fired. One-shot SFX are often
+     * shorter than an analyser window, so this creates a short decaying visual
+     * pulse while the real FFT still remains the primary source.
+     */
+    notifyEvent(kind: 'footstep' | 'prop' | 'tool' | 'plant', surfaceOrProfile = ''): void {
+        const profile = `${kind}:${surfaceOrProfile}`;
+        if (profile.includes('stone') || profile.includes('pickaxe')) {
+            this.eventLow = 0.42; this.eventMid = 0.72; this.eventHigh = 0.66;
+        } else if (profile.includes('wood') || profile.includes('axe')) {
+            this.eventLow = 0.62; this.eventMid = 0.58; this.eventHigh = 0.34;
+        } else if (profile.includes('gravel') || profile.includes('sand') || profile.includes('hoe')) {
+            this.eventLow = 0.36; this.eventMid = 0.66; this.eventHigh = 0.78;
+        } else if (profile.includes('water') || profile.includes('watering')) {
+            this.eventLow = 0.28; this.eventMid = 0.42; this.eventHigh = 0.86;
+        } else if (kind === 'prop' || kind === 'plant') {
+            this.eventLow = 0.50; this.eventMid = 0.70; this.eventHigh = 0.52;
+        } else {
+            this.eventLow = 0.40; this.eventMid = 0.56; this.eventHigh = 0.50;
+        }
+        this.eventPulse = Math.min(1, Math.max(this.eventPulse, kind === 'footstep' ? 0.78 : 1));
+    }
+
     // ── Frame update (called from AudioManager) ──────────────
 
     /**
@@ -204,6 +235,8 @@ export class AdaptiveMixer {
      */
     update(): void {
         this.frameCount++;
+        this.eventPulse *= 0.90;
+        if (this.eventPulse < 0.01) this.eventPulse = 0;
         if (this.frameCount % UPDATE_INTERVAL_FRAMES !== 0) return;
 
         // Cache sample rate on first call
@@ -296,24 +329,31 @@ export class AdaptiveMixer {
             maxBin = Math.max(maxBin, fftBins[i]);
         }
 
-        // The FFT panel should visibly react even during very short one-shot
-        // events. If the real analyser frame misses the transient, add a small
-        // display-only pulse based on the active context flags. The audio path
-        // and EQ decisions above remain unchanged.
-        const transientVisible = maxBin < -54 && (this.footstepsActive || this.propActive);
-        if (transientVisible) {
+        // Short event pulse: only active briefly after actual SFX triggers. This
+        // prevents the old permanent waving spectrum while still making one-shot
+        // footsteps visible when the real FFT window misses the transient.
+        this.displayPhase += 0.18;
+        const pulse = this.eventPulse;
+        if (pulse > 0.01) {
             for (let i = 0; i < fftBins.length; i++) {
-                const phase = Math.sin(i * 0.45 + this.frameCount * 0.22) * 0.5 + 0.5;
-                const shape = this.propActive
-                    ? (i < 10 ? -30 : i < 30 ? -24 : -36)
-                    : (i < 10 ? -42 : i < 30 ? -28 : -34);
-                fftBins[i] = Math.max(fftBins[i], shape - phase * 8);
+                const pos = i / Math.max(1, fftBins.length - 1);
+                const profile = pos < 0.22
+                    ? this.eventLow
+                    : pos < 0.62
+                        ? this.eventMid
+                        : this.eventHigh;
+                const ripple = 0.80 + 0.20 * Math.sin(i * 0.9 + this.displayPhase * 5.0);
+                const target = -60 + pulse * profile * 48 * ripple;
+                fftBins[i] = Math.max(fftBins[i], Math.max(-60, Math.min(-8, target)));
             }
         }
 
-        const displayLow = transientVisible && this.propActive ? -30 : (transientVisible ? -42 : this.smoothLow);
-        const displayMid = transientVisible ? -28 : this.smoothMid;
-        const displayHigh = transientVisible && this.footstepsActive ? -34 : (transientVisible ? -36 : this.smoothHigh);
+        const pulseLow = -60 + pulse * this.eventLow * 48;
+        const pulseMid = -60 + pulse * this.eventMid * 48;
+        const pulseHigh = -60 + pulse * this.eventHigh * 48;
+        const displayLow = Math.max(this.smoothLow, pulseLow);
+        const displayMid = Math.max(this.smoothMid, pulseMid);
+        const displayHigh = Math.max(this.smoothHigh, pulseHigh);
 
         // Build human-readable status
         const parts: string[] = [];

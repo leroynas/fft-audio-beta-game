@@ -1,199 +1,179 @@
 /**
- * LiveDriftMode.ts — Mode B: stable Live Drift + Memory event playback.
+ * LiveDriftMode.ts — Mode B: safe adaptive short-sample playback.
  *
- * v13 stability pass:
- *  - Removed the heavy multi-long-loop GrainPlayer preload path that was causing
- *    console spam, timeouts and silent footsteps when switching to Mode B.
- *  - Mode B now uses the same reliable short event assets as Mode A, but keeps
- *    continuity by using a deterministic cursor, slow drift and performer-state
- *    parameter mapping instead of full i.i.d. randomisation.
- *  - This keeps the demo audible and stable while still making Mode B clearly
- *    different from Mode A: less jumpy, more continuous, and driven by movement.
+ * This version intentionally avoids long loops, granular voices, pooled Tone
+ * Players and fallback synths. It uses the same small one-shot sample set as
+ * Mode A, but chooses and shapes playback with short-term memory and movement
+ * state. The important rule: Mode B must never be able to block the music loop
+ * or stall Phaser's frame update.
  */
 import * as Tone from 'tone';
-import { IAudioMode } from '../AudioManager';
-import { seededRandom } from '../AudioManager';
+import { IAudioMode, seededRandom } from '../AudioManager';
 import { PerformerState } from '../PerformerState';
 import { FloorType, PropType } from '../../types';
 
 const FOOTSTEP_SAMPLES: Record<FloorType, string[]> = {
-    grass:  ['/assets/audio/footsteps/wood_01.mp3'],
-    sand:   ['/assets/audio/footsteps/gravel_01.mp3'],
-    water:  ['/assets/audio/footsteps/stone_01.mp3'],
-    stone:  ['/assets/audio/footsteps/stone_01.mp3'],
-    wood:   ['/assets/audio/footsteps/wood_01.mp3'],
+    grass: ['/assets/audio/footsteps/wood_01.mp3'],
+    sand: ['/assets/audio/footsteps/gravel_01.mp3'],
+    water: ['/assets/audio/footsteps/stone_01.mp3'],
+    stone: ['/assets/audio/footsteps/stone_01.mp3'],
+    wood: ['/assets/audio/footsteps/wood_01.mp3'],
     gravel: ['/assets/audio/footsteps/gravel_01.mp3'],
 };
 
 const PROP_SAMPLES: Record<PropType, string[]> = {
-    keys:     ['/assets/audio/props/keys_01.mp3'],
-    cloth:    ['/assets/audio/props/cloth_01.mp3'],
-    barrel:   ['/assets/audio/props/barrel_01.mp3'],
-    door:     ['/assets/audio/props/door_01.mp3'],
+    keys: ['/assets/audio/props/keys_01.mp3'],
+    cloth: ['/assets/audio/props/cloth_01.mp3'],
+    barrel: ['/assets/audio/props/barrel_01.mp3'],
+    door: ['/assets/audio/props/door_01.mp3'],
     building: ['/assets/audio/props/door_01.mp3'],
-    plant:    ['/assets/audio/props/keys_01.mp3'],
+    plant: ['/assets/audio/props/keys_01.mp3'],
 };
 
-const OUTPUT_GAIN_DB = -4;
-const DRIFT_LERP = 0.16;
-const MAX_VOICES_PER_TRIGGER = 1;
+const BASE_VOLUME_DB = -4;
+const MIN_RETRIGGER_MS = 52;
 
-function lerp(current: number, target: number, amount: number): number {
-    return current + (target - current) * amount;
+function clamp(v: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, v));
 }
 
-class StableDriftVoice {
-    private players: Tone.Player[] = [];
-    private filter: Tone.Filter;
-    private gain: Tone.Gain;
-    private rng: () => number;
-    private readyPromise: Promise<void>;
-    private cursor = 0;
-    private rate = 1;
-    private brightness = 0.5;
-    private weight = 0.5;
-    private lastTrigger = 0;
-
-    constructor(urls: string[], output: Tone.ToneAudioNode, rng: () => number) {
-        this.rng = rng;
-        this.filter = new Tone.Filter({ type: 'lowpass', frequency: 8200, rolloff: -12 });
-        this.gain = new Tone.Gain(1);
-        this.filter.connect(this.gain);
-        this.gain.connect(output);
-
-        const uniqueUrls = Array.from(new Set(urls)).slice(0, MAX_VOICES_PER_TRIGGER);
-        const loads = uniqueUrls.map((url) => this.createPlayer(url));
-        this.readyPromise = Promise.all(loads).then(() => undefined);
-    }
-
-    get ready(): Promise<void> {
-        return this.readyPromise;
-    }
-
-    private createPlayer(url: string): Promise<void> {
-        return new Promise((resolve) => {
-            let settled = false;
-            const finish = () => {
-                if (settled) return;
-                settled = true;
-                resolve();
-            };
-
-            try {
-                const player = new Tone.Player({
-                    url,
-                    volume: OUTPUT_GAIN_DB,
-                    onload: () => {
-                        this.players.push(player);
-                        finish();
-                    },
-                    onerror: () => {
-                        // Keep this intentionally quiet. Missing optional files should
-                        // not make Mode B feel broken during testing.
-                        finish();
-                    },
-                });
-                player.connect(this.filter);
-
-                window.setTimeout(finish, 2500);
-            } catch {
-                finish();
-            }
-        });
-    }
-
-    trigger(state: PerformerState): void {
-        if (this.players.length === 0) return;
-
-        const nowMs = performance.now();
-        if (nowMs - this.lastTrigger < 42) return;
-        this.lastTrigger = nowMs;
-
-        const targetRate = 0.92 + state.energy * 0.18;
-        const targetBrightness = Math.max(0, Math.min(1, state.brightness));
-        const targetWeight = Math.max(0, Math.min(1, state.weight));
-
-        this.rate = lerp(this.rate, targetRate, DRIFT_LERP);
-        this.brightness = lerp(this.brightness, targetBrightness, DRIFT_LERP);
-        this.weight = lerp(this.weight, targetWeight, DRIFT_LERP);
-
-        const indexDrift = this.rng() > 0.82 ? 1 : 0;
-        this.cursor = (this.cursor + indexDrift) % this.players.length;
-        const player = this.players[this.cursor];
-        if (!player || !player.loaded) return;
-
-        player.playbackRate = this.rate;
-        player.volume.value = OUTPUT_GAIN_DB + (this.weight - 0.5) * 3.5;
-        this.filter.frequency.value = 2400 + this.brightness * 8200;
-        this.gain.gain.value = 0.82 + this.weight * 0.18;
-
-        try {
-            if (player.state === 'started') player.stop();
-            player.start();
-        } catch (err) {
-            console.warn('[LiveDriftMode] Stable Mode B event skipped:', err);
-        }
-    }
-
-    dispose(): void {
-        for (const player of this.players) player.dispose();
-        this.players = [];
-        this.filter.dispose();
-        this.gain.dispose();
-    }
+function midiToRate(semitones: number): number {
+    return Math.pow(2, semitones / 12);
 }
+
+type SampleGroup = FloorType | PropType;
 
 export class LiveDriftMode implements IAudioMode {
-    private state: PerformerState;
-    private footstepVoices = new Map<FloorType, StableDriftVoice>();
-    private propVoices = new Map<PropType, StableDriftVoice>();
-    private masterGain: Tone.Gain;
+    private players = new Map<string, Tone.Player>();
     private rng: () => number;
     private initialized = false;
+    private disposed = false;
+    private memory = new Map<SampleGroup, { index: number; pitch: number; volume: number; brightness: number; lastMs: number; count: number }>();
 
-    constructor(performerState: PerformerState, output: Tone.ToneAudioNode, seed: string) {
-        this.state = performerState;
-        this.rng = seededRandom(seed + '_stable_livedrift_v13');
-        this.masterGain = new Tone.Gain(1);
-        this.masterGain.connect(output);
+    constructor(private readonly state: PerformerState, private readonly output: Tone.ToneAudioNode, seed: string) {
+        this.rng = seededRandom(seed + '_safe_mode_b_v21');
     }
 
     async init(): Promise<void> {
         if (this.initialized) return;
+        const urls = new Set<string>();
+        for (const list of Object.values(FOOTSTEP_SAMPLES)) list.forEach((url) => urls.add(url));
+        for (const list of Object.values(PROP_SAMPLES)) list.forEach((url) => urls.add(url));
 
         const loads: Promise<void>[] = [];
-
-        for (const [floor, urls] of Object.entries(FOOTSTEP_SAMPLES)) {
-            const voice = new StableDriftVoice(urls, this.masterGain, this.rng);
-            this.footstepVoices.set(floor as FloorType, voice);
-            loads.push(voice.ready);
-        }
-
-        for (const [prop, urls] of Object.entries(PROP_SAMPLES)) {
-            const voice = new StableDriftVoice(urls, this.masterGain, this.rng);
-            this.propVoices.set(prop as PropType, voice);
-            loads.push(voice.ready);
+        for (const url of urls) {
+            loads.push(new Promise<void>((resolve) => {
+                try {
+                    const player = new Tone.Player({
+                        url,
+                        volume: BASE_VOLUME_DB,
+                        fadeOut: 0.008,
+                        onload: () => {
+                            if (!this.disposed) this.players.set(url, player);
+                            resolve();
+                        },
+                        onerror: () => resolve(),
+                    });
+                    player.connect(this.output);
+                } catch {
+                    resolve();
+                }
+            }));
         }
 
         await Promise.all(loads);
         this.initialized = true;
-        console.log('[LiveDriftMode] Mode B ready — stable drift playback active');
+        console.log(`[LiveDriftMode] Mode B ready — ${this.players.size} short samples loaded`);
     }
 
     playFootstep(floor: FloorType): void {
-        this.footstepVoices.get(floor)?.trigger(this.state);
+        this.playAdaptive(floor, FOOTSTEP_SAMPLES[floor], 'footstep');
     }
 
     playPropInteract(prop: PropType): void {
-        this.propVoices.get(prop)?.trigger(this.state);
+        this.playAdaptive(prop, PROP_SAMPLES[prop], 'prop');
+    }
+
+    private playAdaptive(group: SampleGroup, urls: string[], kind: 'footstep' | 'prop'): void {
+        if (this.disposed || !this.initialized || urls.length === 0) return;
+
+        const now = performance.now();
+        const prev = this.memory.get(group) ?? {
+            index: Math.floor(this.rng() * urls.length),
+            pitch: 0,
+            volume: BASE_VOLUME_DB,
+            brightness: 0.5,
+            lastMs: -Infinity,
+            count: 0,
+        };
+        if (now - prev.lastMs < MIN_RETRIGGER_MS) return;
+
+        const energy = clamp(this.state.energy, 0, 1);
+        const weight = clamp(this.state.weight, 0, 1);
+        const brightness = clamp(this.state.brightness, 0, 1);
+        const continuity = clamp(this.state.tightness, 0, 1);
+        const randomBend = (this.rng() * 2 - 1);
+        const phrase = Math.sin(prev.count * 0.31 + energy * 2.2);
+
+        // Mode B still changes, but it changes through drift: neighbouring
+        // choices and smooth parameter movement instead of hard unrelated jumps.
+        const jumpChance = kind === 'footstep'
+            ? clamp(0.18 + energy * 0.22 - continuity * 0.10, 0.10, 0.44)
+            : 0.36;
+        const nextIndex = this.rng() < jumpChance
+            ? Math.floor(this.rng() * urls.length)
+            : (prev.index + 1) % urls.length;
+        const url = urls[nextIndex];
+        const player = this.players.get(url);
+        if (!player || !player.loaded) return;
+
+        const targetPitch = clamp(
+            (energy - 0.45) * 2.1 +
+            (brightness - 0.5) * 1.35 +
+            phrase * 0.85 +
+            randomBend * 0.55,
+            -4.2,
+            4.2
+        );
+        const targetVolume = clamp(
+            BASE_VOLUME_DB - 2.5 +
+            weight * 4.0 +
+            energy * 1.4 +
+            randomBend * 1.2,
+            -10,
+            1.5
+        );
+
+        const pitch = prev.pitch * 0.52 + targetPitch * 0.48;
+        const volume = prev.volume * 0.48 + targetVolume * 0.52;
+
+        try {
+            player.playbackRate = midiToRate(pitch);
+            player.volume.value = volume;
+
+            // Rewind only this one-shot. This mirrors the stable Mode A path and
+            // avoids overlapping long voices or stopping global/music players.
+            if (player.state === 'started') player.stop();
+            player.start(undefined, 0);
+        } catch (err) {
+            console.warn('[LiveDriftMode] Ignored one-shot playback race:', err);
+        }
+
+        this.memory.set(group, {
+            index: nextIndex,
+            pitch,
+            volume,
+            brightness,
+            lastMs: now,
+            count: prev.count + 1,
+        });
     }
 
     dispose(): void {
-        for (const voice of this.footstepVoices.values()) voice.dispose();
-        for (const voice of this.propVoices.values()) voice.dispose();
-        this.footstepVoices.clear();
-        this.propVoices.clear();
-        this.masterGain.dispose();
+        this.disposed = true;
+        for (const player of this.players.values()) player.dispose();
+        this.players.clear();
+        this.memory.clear();
         this.initialized = false;
     }
 }

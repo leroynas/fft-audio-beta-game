@@ -24,7 +24,7 @@ export interface IAudioMode {
 }
 
 // ── Seed utilities ───────────────────────────────────────────
-const FIXED_SESSION_SEED = 'livedrift-v13';
+const FIXED_SESSION_SEED = 'mode-b-v21';
 
 function generateSeed(): string {
     // Fixed seed for repeatable audio behaviour while testing.
@@ -191,8 +191,23 @@ function toolActionCandidateUrls(action: ToolActionType): string[] {
 }
 
 export class AudioManager {
+    private static sharedInstance: AudioManager | null = null;
+
+    /**
+     * One AudioManager lives across village/house/store scenes. Creating a new
+     * Tone signal chain on every scene transition caused repeated context logs,
+     * duplicate analysers and unstable Mode B behaviour.
+     */
+    static getShared(): AudioManager {
+        if (!AudioManager.sharedInstance) {
+            AudioManager.sharedInstance = new AudioManager();
+        }
+        return AudioManager.sharedInstance;
+    }
+
     private currentMode: IAudioMode;
-    private currentModeName: AudioMode = 'classic';
+    private currentModeName: AudioMode = AudioManager.selectedMode;
+    private static selectedMode: AudioMode = 'classic';
 
     private performerState = new PerformerState();
     private adaptiveMixer = new AdaptiveMixer();
@@ -205,7 +220,9 @@ export class AudioManager {
 
     private started = false;
     private lastPropTime = 0;
+    private lastFootstepTime = 0;
     private _seed: string;
+    private switchingMode = false;
 
     /** Start loading Mode A buffers immediately so first input has less audio delay. */
     private currentModeInitPromise: Promise<void> | null = null;
@@ -235,7 +252,9 @@ export class AudioManager {
         this.adaptiveMixer.output.connect(this.limiter);
         this.limiter.toDestination();
 
-        this.currentMode = new ClassicMode(this.modeBus, this._seed);
+        this.currentMode = this.currentModeName === 'classic'
+            ? new ClassicMode(this.modeBus, this._seed)
+            : new LiveDriftMode(this.performerState, this.modeBus, this._seed);
         this.currentModeInitPromise = this.currentMode.init().catch((err) => {
             console.warn('[AudioManager] Initial audio preload failed:', err);
         });
@@ -263,8 +282,9 @@ export class AudioManager {
     updatePerformer(deltaSec: number, speed: number, floor: FloorType): void {
         this.performerState.update(deltaSec, speed, floor);
 
-        this.adaptiveMixer.footstepsActive = speed > 20;
-        this.adaptiveMixer.propActive = (performance.now() - this.lastPropTime) < 400;
+        const now = performance.now();
+        this.adaptiveMixer.footstepsActive = (now - this.lastFootstepTime) < 320;
+        this.adaptiveMixer.propActive = (now - this.lastPropTime) < 420;
 
         const targetWet = REVERB_WET_TARGETS[floor] ?? 0.15;
         this.reverbWet += (targetWet - this.reverbWet) * REVERB_LERP;
@@ -279,27 +299,31 @@ export class AudioManager {
     }
 
     async switchMode(mode: AudioMode): Promise<void> {
-        if (mode === this.currentModeName) return;
+        if (mode === this.currentModeName || this.switchingMode) return;
+        this.switchingMode = true;
 
-        this.currentMode.dispose();
+        const previousMode = this.currentMode;
+        const nextMode = mode === 'classic'
+            ? new ClassicMode(this.modeBus, this._seed)
+            : new LiveDriftMode(this.performerState, this.modeBus, this._seed);
 
-        if (mode === 'classic') {
-            this.currentMode = new ClassicMode(this.modeBus, this._seed);
-        } else {
-            this.currentMode = new LiveDriftMode(this.performerState, this.modeBus, this._seed);
-        }
-
-        this.currentModeName = mode;
-        this.currentModeInitPromise = this.currentMode.init().catch((err) => {
-            console.warn(`[AudioManager] Could not init mode ${mode}:`, err);
-        });
-
-        if (this.started && this.currentModeInitPromise) {
+        try {
+            this.currentModeInitPromise = nextMode.init();
             await this.currentModeInitPromise;
-            void this.startMusicLoop();
-        }
 
-        console.log(`[AudioManager] Switched to mode: ${mode}`);
+            previousMode.dispose();
+            this.currentMode = nextMode;
+            this.currentModeName = mode;
+            AudioManager.selectedMode = mode;
+            void this.startMusicLoop();
+
+            console.log(`[AudioManager] Switched to mode: ${mode}`);
+        } catch (err) {
+            console.warn(`[AudioManager] Could not init mode ${mode}; keeping previous mode active:`, err);
+            try { nextMode.dispose(); } catch { /* ignore cleanup race */ }
+        } finally {
+            this.switchingMode = false;
+        }
     }
 
     async newSeed(): Promise<void> {
@@ -321,6 +345,8 @@ export class AudioManager {
 
     playFootstep(floor: FloorType): void {
         if (!this.started) return;
+        this.lastFootstepTime = performance.now();
+        this.adaptiveMixer.notifyEvent('footstep', floor);
         try {
             this.currentMode.playFootstep(floor);
         } catch (err) {
@@ -331,6 +357,7 @@ export class AudioManager {
     playPropInteract(prop: PropType): void {
         if (!this.started) return;
         this.lastPropTime = performance.now();
+        this.adaptiveMixer.notifyEvent('prop', prop);
         try {
             this.currentMode.playPropInteract(prop);
         } catch (err) {
@@ -342,6 +369,7 @@ export class AudioManager {
     playPlantGrowthStage(variant: PlantVariant, stage: PlantGrowthStage): void {
         if (!this.started) return;
         this.lastPropTime = performance.now();
+        this.adaptiveMixer.notifyEvent('plant', `${variant}:${stage}`);
 
         const candidates = [
             ...plantStageCandidateUrls(variant, stage),
@@ -360,6 +388,7 @@ export class AudioManager {
     playPlantHarvest(variant: PlantVariant): void {
         if (!this.started) return;
         this.lastPropTime = performance.now();
+        this.adaptiveMixer.notifyEvent('plant', `${variant}:harvest`);
 
         const candidates = [
             ...plantHarvestCandidateUrls(variant),
@@ -378,6 +407,7 @@ export class AudioManager {
     playToolAction(action: ToolActionType): void {
         if (!this.started) return;
         this.lastPropTime = performance.now();
+        this.adaptiveMixer.notifyEvent('tool', action);
 
         const candidates = toolActionCandidateUrls(action);
         const pitchByAction: Record<ToolActionType, number> = {
@@ -394,6 +424,24 @@ export class AudioManager {
             TOOL_AUDIO_VOLUME_DB[action],
             pitchByAction[action]
         );
+    }
+
+    /**
+     * Full cleanup is only for page teardown/tests. Scenes should not call this;
+     * the shared manager intentionally survives scene changes.
+     */
+    dispose(): void {
+        try { this.currentMode.dispose(); } catch { /* ignore */ }
+        for (const player of this.plantOneShotPlayers.values()) {
+            try { player.dispose(); } catch { /* ignore */ }
+        }
+        this.plantOneShotPlayers.clear();
+        this.modeBus.dispose();
+        this.panner.dispose();
+        this.reverb.dispose();
+        this.limiter.dispose();
+        this.adaptiveMixer.dispose();
+        AudioManager.sharedInstance = null;
     }
 
     private async playPlantOneShot(
@@ -429,10 +477,14 @@ export class AudioManager {
 
         if (!player.loaded) return;
 
-        player.playbackRate = playbackRate;
-        player.volume.value = volumeDb;
-        player.stop();
-        player.start();
+        try {
+            player.playbackRate = playbackRate;
+            player.volume.value = volumeDb;
+            if (player.state === 'started') player.stop();
+            player.start();
+        } catch (err) {
+            console.warn('[AudioManager] Ignored one-shot playback race:', err);
+        }
     }
 
     private async resolveFirstExistingUrl(cacheKey: string, candidateUrls: string[]): Promise<string | null> {

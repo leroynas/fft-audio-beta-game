@@ -1,27 +1,24 @@
 /**
- * UI.ts — compact fixed-screen HUD overlay utilities.
+ * UI.ts — DOM-based canvas overlay HUD.
  *
- * v13:
- *  - Mode shortcuts are integrated into the mode board.
- *  - Spectrum sits in the upper-right, with the FFT Mix panel directly below.
- *  - Money/gold sits in the lower-left.
- *  - Toolbar is smaller and uses generated pixel-tool icons, including a clear hoe icon.
- *  - HUD is projected into world space from screen pixels, so it stays locked to the canvas while the world camera zooms.
- *  - Adds a manual Save Progress button; refresh resets unsaved money/state.
+ * The previous Phaser HUD was repeatedly affected by world camera zoom. This
+ * version is a normal HTML overlay pinned to the actual canvas rectangle, so
+ * zooming the character/world never moves or scales the buttons, toolbar,
+ * money, analyser, mode board or inventory.
  */
 import Phaser from 'phaser';
-import { AudioMode, FloorType, ToolType } from '../types';
+import { AudioMode, FloorType, PlantVariant, ToolType } from '../types';
 import { MixerSnapshot } from '../audio/AdaptiveMixer';
 import { FarmState, SEED_CATALOG } from '../gameData';
 
 const MODE_LABELS: Record<AudioMode, string> = {
-    classic: 'Mode A · Random Samples',
-    live: 'Mode B · FFT/FluCoMa Data',
+    classic: 'Mode A · Random Sample List',
+    live: 'Mode B · Adaptive Drift',
 };
 
 const MODE_DESCRIPTIONS: Record<AudioMode, string> = {
-    classic: 'WASD move · E interact · M switch mode · TAB inventory · SAVE keeps progress',
-    live: 'WASD move · E interact · M switch mode · TAB inventory · generated from FFT/FluCoMa-style data',
+    classic: 'Each event picks one prepared sample, for example stone_01 / stone_02.',
+    live: 'Adaptive continuity: movement shapes pitch, brightness, weight and timing over time.',
 };
 
 const MODE_COLORS: Record<AudioMode, string> = {
@@ -29,277 +26,225 @@ const MODE_COLORS: Record<AudioMode, string> = {
     live: '#9df8a6',
 };
 
-const SPEC_MARGIN = 14;
-const SPEC_TOP_Y = 14;
-const SPEC_BINS = 64;
-const SPEC_BAR_W = 2;
-const SPEC_BAR_GAP = 0.5;
-const SPEC_MAX_H = 44;
-const SPEC_PANEL_PAD = 8;
-const SPEC_PANEL_W = SPEC_BINS * (SPEC_BAR_W + SPEC_BAR_GAP) + SPEC_PANEL_PAD * 2;
-const SPEC_PANEL_H = SPEC_MAX_H + 32;
-const LOW_BIN_END = 10;
-const MID_BIN_END = 30;
+const TOOLS: { key: ToolType; label: string; icon: string }[] = [
+    { key: 'pickaxe', label: 'Pickaxe', icon: '⛏' },
+    { key: 'axe', label: 'Axe', icon: '🪓' },
+    { key: 'hoe', label: 'Hoe', icon: '⌐' },
+    { key: 'watering_can', label: 'Water', icon: '💧' },
+];
 
-const MIX_PANEL_W = SPEC_PANEL_W;
-const MIX_PANEL_H = 86;
-const MIX_GAP = 8;
-
-const TOOL_BOX_W = 76;
-const TOOL_BOX_H = 42;
-const TOOL_GAP = 6;
-const TOOLBAR_BOTTOM_MARGIN = 12;
-const ZOOM_BOX_W = 36;
-const ZOOM_BOX_H = 32;
-const ZOOM_GAP = 6;
-const SAVE_BOX_W = 64;
-const SAVE_BOX_H = 26;
-
-const INVENTORY_W = 560;
-const INVENTORY_H = 392;
-const INVENTORY_SLOT = 54;
-const INVENTORY_PAD = 18;
+const PLANT_ASSETS: Record<PlantVariant, { folder: string; filePrefix: string }> = {
+    beat_beet: { folder: 'Beat_Beet', filePrefix: 'Beatbeet' },
+    crescendo_carrot: { folder: 'Crescendo_Carrot', filePrefix: 'CrescendoCarrot' },
+    echo_eggplant: { folder: 'Echo_Eggplant', filePrefix: 'EchoEggplant' },
+    melody_melon: { folder: 'Melody_Melon', filePrefix: 'MelodyMelon' },
+    rhythm_radish: { folder: 'Rhythm_Radish', filePrefix: 'RhythmRadish' },
+    treble_turnip: { folder: 'Treble_Turnip', filePrefix: 'TrebleTurnip' },
+    vinyl_vine: { folder: 'Vinyl_Vine', filePrefix: 'VinylVine' },
+};
 
 const DB_FLOOR = -60;
 const DB_CEIL = 0;
-
-const BAR_COLORS = {
-    low: 0x6ba6ff,
-    mid: 0xf0b64e,
-    high: 0xe776b6,
-};
-
-const TOOLS: { key: ToolType; label: string }[] = [
-    { key: 'pickaxe', label: 'Pick' },
-    { key: 'axe', label: 'Axe' },
-    { key: 'hoe', label: 'Hoe' },
-    { key: 'watering_can', label: 'Water' },
-];
+const SPEC_BINS = 64;
 
 function dbToNorm(db: number): number {
     const safe = Number.isFinite(db) ? db : DB_FLOOR;
     return Math.max(0, Math.min(1, (safe - DB_FLOOR) / (DB_CEIL - DB_FLOOR)));
 }
 
-function binColor(i: number): number {
-    if (i < LOW_BIN_END) return 0xd85d45;
-    if (i < MID_BIN_END) return 0xe9bc57;
-    return 0x64d8e8;
+function plantImageUrl(variant: PlantVariant, stage: 2 | 4): string {
+    const asset = PLANT_ASSETS[variant];
+    const suffix = stage === 2 ? '02_Sprout' : '04_Mature';
+    return `/assets/sprites/Plants/plants/${asset.folder}/${asset.filePrefix}_${suffix}.png`;
+}
+
+function clearChildren(el: HTMLElement): void {
+    while (el.firstChild) el.removeChild(el.firstChild);
+}
+
+function makeEl<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text) el.textContent = text;
+    return el;
 }
 
 export class UI {
-    private scene: Phaser.Scene;
-    private hudGfx: Phaser.GameObjects.Graphics;
-    private specGfx: Phaser.GameObjects.Graphics;
-    private mixGfx: Phaser.GameObjects.Graphics;
-    private toolPanel: Phaser.GameObjects.Graphics;
-    private zoomPanel: Phaser.GameObjects.Graphics;
-    private inventoryGfx: Phaser.GameObjects.Graphics;
-
-    private modeText: Phaser.GameObjects.Text;
-    private modeDescText: Phaser.GameObjects.Text;
-    private floorText: Phaser.GameObjects.Text;
-    private seedText: Phaser.GameObjects.Text;
-    private moneyText: Phaser.GameObjects.Text;
-    private saveText: Phaser.GameObjects.Text;
-    private saveZone: Phaser.GameObjects.Zone;
-    private saveStatusText: Phaser.GameObjects.Text;
-    private specTitleText: Phaser.GameObjects.Text;
-    private mixTitleText: Phaser.GameObjects.Text;
-    private mixerStatusText: Phaser.GameObjects.Text;
-    private mixValueTexts: Phaser.GameObjects.Text[] = [];
-
-    private toolTexts: Phaser.GameObjects.Text[] = [];
-    private toolIcons: Phaser.GameObjects.Image[] = [];
-    private toolZones: Phaser.GameObjects.Zone[] = [];
-    private zoomTexts: Phaser.GameObjects.Text[] = [];
-    private zoomZones: Phaser.GameObjects.Zone[] = [];
-    private inventoryObjects: Phaser.GameObjects.GameObject[] = [];
-    private inventoryOpen = false;
-    private hudCamera?: Phaser.Cameras.Scene2D.Camera;
+    private root: HTMLDivElement;
+    private modePanel: HTMLDivElement;
+    private modeTitle: HTMLDivElement;
+    private modeDesc: HTMLDivElement;
+    private floorText: HTMLDivElement;
+    private moneyText: HTMLDivElement;
+    private saveButton: HTMLButtonElement;
+    private saveStatus: HTMLDivElement;
+    private toolbar: HTMLDivElement;
+    private zoomPanel: HTMLDivElement;
+    private spectrumPanel: HTMLDivElement;
+    private spectrumBars: HTMLDivElement[] = [];
+    private mixPanel: HTMLDivElement;
+    private mixRows: { row: HTMLDivElement; fill: HTMLDivElement; text: HTMLDivElement }[] = [];
+    private inventoryPanel: HTMLDivElement;
+    private toolButtons = new Map<ToolType, HTMLButtonElement>();
 
     private activeTool: ToolType = 'hoe';
+    private inventoryOpen = false;
     private onToolSelect?: (tool: ToolType) => void;
     private onZoom?: (direction: number) => void;
-    private resizeHandler?: () => void;
-    private destroyed = false;
-    private hudScale = 1;
     private saveStatusUntil = 0;
+    private destroyed = false;
+    private readonly canvas: HTMLCanvasElement;
+    private readonly overlayHost: HTMLElement;
+    private readonly usesBodyFallback: boolean;
+    private readonly resizeHandler: () => void;
 
     constructor(scene: Phaser.Scene, onToolSelect?: (tool: ToolType) => void, onZoom?: (direction: number) => void) {
-        this.scene = scene;
         this.onToolSelect = onToolSelect;
         this.onZoom = onZoom;
-        this.ensureToolIconTextures();
 
-        this.hudGfx = scene.add.graphics().setScrollFactor(0).setDepth(98);
-        this.specGfx = scene.add.graphics().setScrollFactor(0).setDepth(100);
-        this.mixGfx = scene.add.graphics().setScrollFactor(0).setDepth(100);
-        this.toolPanel = scene.add.graphics().setScrollFactor(0).setDepth(101);
-        this.zoomPanel = scene.add.graphics().setScrollFactor(0).setDepth(101);
-        this.inventoryGfx = scene.add.graphics().setScrollFactor(0).setDepth(140);
+        this.canvas = scene.game.canvas;
+        this.overlayHost = document.getElementById('game-container') ?? this.canvas.parentElement ?? document.body;
+        this.usesBodyFallback = this.overlayHost === document.body;
+        this.resizeHandler = () => this.syncToCanvas();
+        this.root = makeEl('div', 'stardew-hud-overlay') as HTMLDivElement;
+        this.overlayHost.appendChild(this.root);
+        window.addEventListener('resize', this.resizeHandler, { passive: true });
+        this.syncToCanvas();
 
-        const baseText: Phaser.Types.GameObjects.Text.TextStyle = {
-            fontFamily: 'monospace',
-            color: '#f7ead1',
-            stroke: '#2a1208',
-            strokeThickness: 3,
-        };
+        this.modePanel = makeEl('div', 'hud-panel mode-panel') as HTMLDivElement;
+        this.modeTitle = makeEl('div', 'mode-title') as HTMLDivElement;
+        this.modeDesc = makeEl('div', 'mode-desc') as HTMLDivElement;
+        this.floorText = makeEl('div', 'mode-floor') as HTMLDivElement;
+        this.modePanel.append(this.modeTitle, this.modeDesc, this.floorText);
 
-        this.modeText = scene.add.text(0, 0, '', {
-            ...baseText,
-            fontSize: '15px',
-            fontStyle: 'bold',
-        }).setScrollFactor(0).setDepth(102);
+        const wallet = makeEl('div', 'hud-panel wallet-panel') as HTMLDivElement;
+        this.moneyText = makeEl('div', 'money-text') as HTMLDivElement;
+        this.saveButton = makeEl('button', 'save-button', 'SAVE') as HTMLButtonElement;
+        this.saveStatus = makeEl('div', 'save-status') as HTMLDivElement;
+        this.saveButton.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            FarmState.saveProgress();
+            this.saveStatusUntil = performance.now() + 1500;
+            this.renderInventory();
+        });
+        wallet.append(this.moneyText, this.saveButton, this.saveStatus);
 
-        this.modeDescText = scene.add.text(0, 0, '', {
-            ...baseText,
-            fontSize: '9px',
-            color: '#d9c49e',
-            strokeThickness: 2,
-            wordWrap: { width: 315 },
-        }).setScrollFactor(0).setDepth(102);
-
-        this.floorText = scene.add.text(0, 0, '', {
-            ...baseText,
-            fontSize: '10px',
-            color: '#fff1a8',
-            strokeThickness: 2,
-        }).setScrollFactor(0).setDepth(102);
-
-        this.seedText = scene.add.text(0, 0, '', {
-            ...baseText,
-            fontSize: '9px',
-            color: '#a9dfff',
-            strokeThickness: 2,
-        }).setScrollFactor(0).setDepth(102);
-
-        this.specTitleText = scene.add.text(0, 0, 'SPECTRUM 20Hz → 20kHz', {
-            ...baseText,
-            fontSize: '9px',
-            color: '#ffde8f',
-            fontStyle: 'bold',
-            strokeThickness: 2,
-        }).setOrigin(1, 0).setScrollFactor(0).setDepth(102);
-
-        this.mixTitleText = scene.add.text(0, 0, 'FFT MIX', {
-            ...baseText,
-            fontSize: '9px',
-            color: '#ffde8f',
-            fontStyle: 'bold',
-            strokeThickness: 2,
-        }).setOrigin(1, 0).setScrollFactor(0).setDepth(102);
-
-        this.mixerStatusText = scene.add.text(0, 0, '', {
-            ...baseText,
-            fontSize: '8px',
-            color: '#d9c49e',
-            strokeThickness: 2,
-            wordWrap: { width: SPEC_PANEL_W - 18 },
-        }).setScrollFactor(0).setDepth(102);
-
-        for (const label of ['LOW', 'MID', 'HIGH']) {
-            this.mixValueTexts.push(scene.add.text(0, 0, label, {
-                ...baseText,
-                fontSize: '8px',
-                color: '#dbc4a0',
-                strokeThickness: 2,
-            }).setScrollFactor(0).setDepth(102));
+        this.toolbar = makeEl('div', 'hud-panel tool-panel') as HTMLDivElement;
+        for (const tool of TOOLS) {
+            const btn = makeEl('button', 'tool-button') as HTMLButtonElement;
+            btn.dataset.tool = tool.key;
+            btn.innerHTML = `<span class="tool-icon">${tool.icon}</span><span class="tool-label">${tool.label}</span>`;
+            btn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                this.onToolSelect?.(tool.key);
+            });
+            this.toolbar.appendChild(btn);
+            this.toolButtons.set(tool.key, btn);
         }
 
-        this.moneyText = scene.add.text(0, 0, '', {
-            fontSize: '15px',
-            color: '#fff1a8',
-            fontFamily: 'monospace',
-            fontStyle: 'bold',
-            stroke: '#2a1208',
-            strokeThickness: 4,
-        }).setScrollFactor(0).setDepth(110);
+        this.zoomPanel = makeEl('div', 'hud-panel zoom-panel') as HTMLDivElement;
+        const zoomOut = makeEl('button', 'zoom-button', '−') as HTMLButtonElement;
+        const zoomIn = makeEl('button', 'zoom-button', '+') as HTMLButtonElement;
+        zoomOut.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); this.onZoom?.(-1); });
+        zoomIn.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); this.onZoom?.(1); });
+        this.zoomPanel.append(zoomOut, zoomIn);
 
-        this.saveText = scene.add.text(0, 0, 'SAVE', {
-            fontSize: '10px',
-            color: '#fff1a8',
-            fontFamily: 'monospace',
-            fontStyle: 'bold',
-            stroke: '#2a1208',
-            strokeThickness: 3,
-        }).setOrigin(0.5).setScrollFactor(0).setDepth(110);
+        this.spectrumPanel = makeEl('div', 'hud-panel spectrum-panel') as HTMLDivElement;
+        const specTitle = makeEl('div', 'analysis-title', 'SPECTRUM') as HTMLDivElement;
+        const specBars = makeEl('div', 'spectrum-bars') as HTMLDivElement;
+        for (let i = 0; i < SPEC_BINS; i++) {
+            const bar = makeEl('div', 'spectrum-bar') as HTMLDivElement;
+            bar.style.height = '2px';
+            specBars.appendChild(bar);
+            this.spectrumBars.push(bar);
+        }
+        const axis = makeEl('div', 'spectrum-axis') as HTMLDivElement;
+        axis.innerHTML = '<span>20Hz</span><span>1k</span><span>20k</span>';
+        this.spectrumPanel.append(specTitle, specBars, axis);
 
-        this.saveStatusText = scene.add.text(0, 0, '', {
-            fontSize: '8px',
-            color: '#9df8a6',
-            fontFamily: 'monospace',
-            stroke: '#2a1208',
-            strokeThickness: 2,
-        }).setScrollFactor(0).setDepth(110);
+        this.mixPanel = makeEl('div', 'hud-panel mix-panel') as HTMLDivElement;
+        const mixTitle = makeEl('div', 'analysis-title', 'FFT MIX') as HTMLDivElement;
+        this.mixPanel.appendChild(mixTitle);
+        for (const band of ['LOW', 'MID', 'HIGH']) {
+            const row = makeEl('div', 'mix-row') as HTMLDivElement;
+            const label = makeEl('span', 'mix-label', band) as HTMLSpanElement;
+            const track = makeEl('div', 'mix-track') as HTMLDivElement;
+            const fill = makeEl('div', `mix-fill ${band.toLowerCase()}`) as HTMLDivElement;
+            const text = makeEl('span', 'mix-value', '+0.0dB') as HTMLSpanElement;
+            track.appendChild(fill);
+            row.append(label, track, text);
+            this.mixPanel.appendChild(row);
+            this.mixRows.push({ row, fill, text: text as HTMLDivElement });
+        }
 
-        this.saveZone = scene.add.zone(0, 0, SAVE_BOX_W, SAVE_BOX_H)
-            .setOrigin(0.5)
-            .setScrollFactor(0)
-            .setDepth(111)
-            .setInteractive({ useHandCursor: true });
-        this.saveZone.on('pointerdown', () => {
-            FarmState.saveProgress();
-            this.saveStatusUntil = performance.now() + 1600;
-        });
+        this.inventoryPanel = makeEl('div', 'inventory-panel hidden') as HTMLDivElement;
 
-        this.createToolbar();
-        this.createZoomButtons();
-        this.reposition(scene);
-        this.syncHudCamera();
+        this.root.append(this.modePanel, wallet, this.spectrumPanel, this.mixPanel, this.toolbar, this.zoomPanel, this.inventoryPanel);
 
-        this.resizeHandler = () => {
-            if (this.destroyed || !this.scene.sys.isActive()) return;
-            this.reposition(scene);
-        };
-        scene.scale.on('resize', this.resizeHandler);
         scene.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.destroy());
         scene.events.once(Phaser.Scenes.Events.DESTROY, () => this.destroy());
+        this.updateActiveTool();
     }
 
     destroy(): void {
         if (this.destroyed) return;
         this.destroyed = true;
-        if (this.resizeHandler) {
-            this.scene.scale.off('resize', this.resizeHandler);
-            this.resizeHandler = undefined;
-        }
+        window.removeEventListener('resize', this.resizeHandler);
+        this.root.remove();
     }
 
-    update(mode: AudioMode, floor: FloorType, mixer?: MixerSnapshot, seed?: string, tool: ToolType = this.activeTool): void {
-        if (this.destroyed || !this.modeText.scene) return;
+    private syncToCanvas(): void {
+        if (this.destroyed) return;
 
-        this.reposition(this.scene);
-        this.redrawHudChrome(mode);
-        this.redrawToolbar();
-        this.redrawZoomButtons();
-
-        this.moneyText.setText(`◈ ${FarmState.coins}`);
-        this.saveStatusText.setText(performance.now() < this.saveStatusUntil ? 'saved' : (FarmState.hasManualSave ? 'manual save' : 'fresh run'));
-        this.saveStatusText.setColor(performance.now() < this.saveStatusUntil ? '#9df8a6' : '#d9c49e');
-        this.modeText.setText(MODE_LABELS[mode]);
-        this.modeText.setColor(MODE_COLORS[mode]);
-        this.modeDescText.setText(MODE_DESCRIPTIONS[mode]);
-        this.floorText.setText(`Floor: ${floor.toUpperCase()}`);
-        this.seedText.setText(seed ? `Seed: ${seed} · locked` : 'Seed: locked');
-        this.setActiveTool(tool);
-        this.redrawInventory();
-        this.syncHudCamera();
-
-        if (mixer) {
-            this.drawSpectrogram(mixer);
-            this.drawFFTMix(mixer);
-            this.mixerStatusText.setText(mixer.statusText);
-            this.mixerStatusText.setColor(
-                mixer.lowDucking || mixer.midCutting || mixer.compressorEngaged ? '#ffde8f' : '#9df8a6'
-            );
+        // Normal path: the HUD lives inside #game-container and uses absolute
+        // inset:0, so it is tied to the canvas frame and never affected by
+        // Phaser camera zoom. No per-frame rect measuring = no shake.
+        if (!this.usesBodyFallback) {
+            this.root.style.left = '';
+            this.root.style.top = '';
+            this.root.style.width = '';
+            this.root.style.height = '';
+            return;
         }
+
+        // Fallback for unusual embeds where #game-container is missing.
+        const rect = this.canvas.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return;
+        const style = this.root.style;
+        style.position = 'fixed';
+        style.left = `${rect.left}px`;
+        style.top = `${rect.top}px`;
+        style.width = `${rect.width}px`;
+        style.height = `${rect.height}px`;
+    }
+
+    update(mode: AudioMode, floor: FloorType, mixer?: MixerSnapshot, _seed?: string, tool: ToolType = this.activeTool): void {
+        if (this.destroyed) return;
+        this.syncToCanvas();
+
+        this.activeTool = tool;
+        this.modeTitle.textContent = MODE_LABELS[mode];
+        this.modeTitle.style.color = MODE_COLORS[mode];
+        this.modePanel.style.setProperty('--mode-color', MODE_COLORS[mode]);
+        this.modeDesc.textContent = MODE_DESCRIPTIONS[mode];
+        this.floorText.textContent = `Floor: ${floor.toUpperCase()}`;
+        this.moneyText.textContent = `◈ ${FarmState.coins}`;
+        this.saveStatus.textContent = performance.now() < this.saveStatusUntil
+            ? 'saved'
+            : (FarmState.hasManualSave ? 'manual save' : 'fresh run');
+        this.saveStatus.classList.toggle('saved-now', performance.now() < this.saveStatusUntil);
+        this.updateActiveTool();
+
+        if (mixer) this.updateAnalysis(mixer);
+        if (this.inventoryOpen) this.renderInventory();
     }
 
     toggleInventory(): void {
         this.inventoryOpen = !this.inventoryOpen;
-        this.redrawInventory();
-        this.syncHudCamera();
+        this.inventoryPanel.classList.toggle('hidden', !this.inventoryOpen);
+        this.renderInventory();
     }
 
     isInventoryOpen(): boolean {
@@ -307,505 +252,108 @@ export class UI {
     }
 
     setActiveTool(tool: ToolType): void {
-        if (this.destroyed || this.activeTool === tool) return;
         this.activeTool = tool;
-        this.redrawToolbar();
+        this.updateActiveTool();
     }
 
-    private sx(x: number): number {
-        return x;
-    }
-
-    private sy(y: number): number {
-        return y;
-    }
-
-
-    private refreshHudScale(): void {
-        // v16: HUD lives in its own overlay camera. Coordinates are true screen
-        // pixels, not projected world coordinates, so zoom buttons and the rest
-        // of the UI remain locked to the canvas during camera zoom.
-        this.hudScale = 1;
-
-        const graphics = [this.hudGfx, this.specGfx, this.mixGfx, this.toolPanel, this.zoomPanel, this.inventoryGfx];
-        for (const gfx of graphics) {
-            if (!gfx.scene) continue;
-            gfx.setPosition(0, 0);
-            gfx.setScale(1);
-            gfx.setScrollFactor(0);
+    private updateActiveTool(): void {
+        for (const [tool, btn] of this.toolButtons) {
+            btn.classList.toggle('active', tool === this.activeTool);
         }
-
-        for (const obj of this.getHudObjects()) {
-            const scalableObj = obj as Phaser.GameObjects.GameObject & {
-                scene?: Phaser.Scene;
-                setScale?: (x: number, y?: number) => void;
-                setScrollFactor?: (x: number, y?: number) => void;
-            };
-            if (scalableObj.scene && scalableObj.setScale) scalableObj.setScale(1);
-            if (scalableObj.scene && scalableObj.setScrollFactor) scalableObj.setScrollFactor(0);
-        }
-        this.syncHudCamera();
     }
 
-    private getHudObjects(): Phaser.GameObjects.GameObject[] {
-        return [
-            this.hudGfx,
-            this.specGfx,
-            this.mixGfx,
-            this.toolPanel,
-            this.zoomPanel,
-            this.inventoryGfx,
-            this.modeText,
-            this.modeDescText,
-            this.floorText,
-            this.seedText,
-            this.moneyText,
-            this.saveText,
-            this.saveStatusText,
-            this.saveZone,
-            this.specTitleText,
-            this.mixTitleText,
-            this.mixerStatusText,
-            ...this.mixValueTexts,
-            ...this.toolTexts,
-            ...this.toolIcons,
-            ...this.toolZones,
-            ...this.zoomTexts,
-            ...this.zoomZones,
-            ...this.inventoryObjects,
-        ].filter((obj) => !!(obj as Phaser.GameObjects.GameObject & { scene?: Phaser.Scene }).scene);
-    }
-
-    private syncHudCamera(): void {
-        if (this.destroyed || !this.scene.sys.isActive()) return;
-        const width = this.scene.scale.width;
-        const height = this.scene.scale.height;
-        if (!this.hudCamera || !this.scene.cameras.cameras.includes(this.hudCamera)) {
-            this.hudCamera = this.scene.cameras.add(0, 0, width, height, false, 'HUDOverlayCamera');
-            this.hudCamera.setScroll(0, 0);
-            this.hudCamera.setZoom(1);
-        } else {
-            this.hudCamera.setViewport(0, 0, width, height);
-            this.hudCamera.setScroll(0, 0);
-            this.hudCamera.setZoom(1);
-        }
-
-        const hudObjects = this.getHudObjects();
-        this.scene.cameras.main.ignore(hudObjects);
-        const worldObjects = this.scene.children.list.filter((obj: Phaser.GameObjects.GameObject) => !hudObjects.includes(obj));
-        this.hudCamera.ignore(worldObjects);
-    }
-
-    private redrawHudChrome(mode: AudioMode): void {
-        if (this.destroyed || !this.hudGfx.scene) return;
-        this.hudGfx.clear();
-        this.hudGfx.setScale(this.hudScale);
-
-        // Compact mode/shortcut board.
-        this.hudGfx.fillStyle(0x000000, 0.28);
-        this.hudGfx.fillRoundedRect(16 + 3, 16 + 3, 330, 82, 10);
-        this.hudGfx.fillStyle(0x332116, 0.94);
-        this.hudGfx.fillRoundedRect(16, 16, 330, 82, 10);
-        this.hudGfx.lineStyle(3, 0x2a1208, 1);
-        this.hudGfx.strokeRoundedRect(16, 16, 330, 82, 10);
-        this.hudGfx.lineStyle(2, mode === 'live' ? 0x9df8a6 : 0xff927f, 0.86);
-        this.hudGfx.strokeRoundedRect(21, 21, 320, 72, 8);
-
-        // Gold badge bottom-left.
-        const h = this.scene.scale.height;
-        this.hudGfx.fillStyle(0x000000, 0.26);
-        this.hudGfx.fillRoundedRect(17, h - 53, 196, 38, 10);
-        this.hudGfx.fillStyle(0x5a341b, 0.96);
-        this.hudGfx.fillRoundedRect(14, h - 56, 196, 38, 10);
-        this.hudGfx.lineStyle(3, 0xffde8f, 0.86);
-        this.hudGfx.strokeRoundedRect(14, h - 56, 196, 38, 10);
-        this.hudGfx.fillStyle(0x2f2116, 0.92);
-        this.hudGfx.fillRoundedRect(138, h - 50, SAVE_BOX_W, SAVE_BOX_H, 8);
-        this.hudGfx.lineStyle(2, 0xc28745, 0.92);
-        this.hudGfx.strokeRoundedRect(138, h - 50, SAVE_BOX_W, SAVE_BOX_H, 8);
-    }
-
-    private drawSpectrogram(mixer: MixerSnapshot): void {
-        this.specGfx.clear();
-        this.specGfx.setScale(this.hudScale);
-
+    private updateAnalysis(mixer: MixerSnapshot): void {
         const bins = mixer.fftBins;
-        const w = this.scene.scale.width;
-        const panelX = w - SPEC_PANEL_W - SPEC_MARGIN;
-        const panelY = SPEC_TOP_Y;
-        const startX = panelX + SPEC_PANEL_PAD;
-        const startY = panelY + 24;
-
-        this.specGfx.fillStyle(0x000000, 0.28);
-        this.specGfx.fillRoundedRect(panelX + 3, panelY + 3, SPEC_PANEL_W, SPEC_PANEL_H, 8);
-        this.specGfx.fillStyle(0x211812, 0.92);
-        this.specGfx.fillRoundedRect(panelX, panelY, SPEC_PANEL_W, SPEC_PANEL_H, 8);
-        this.specGfx.lineStyle(2, 0x7d4b25, 0.95);
-        this.specGfx.strokeRoundedRect(panelX, panelY, SPEC_PANEL_W, SPEC_PANEL_H, 8);
-
-        this.specGfx.lineStyle(1, 0xf0c46a, 0.32);
-        this.specGfx.lineBetween(startX, startY + SPEC_MAX_H + 2, startX + SPEC_BINS * (SPEC_BAR_W + SPEC_BAR_GAP), startY + SPEC_MAX_H + 2);
-
-        const binCount = Math.min(SPEC_BINS, bins?.length ?? 0);
-        for (let i = 0; i < binCount; i++) {
-            const norm = dbToNorm(bins[i]);
-            const barH = Math.max(1, norm * SPEC_MAX_H);
-            const x = startX + i * (SPEC_BAR_W + SPEC_BAR_GAP);
-            const y = startY + SPEC_MAX_H - barH;
-            this.specGfx.fillStyle(binColor(i), 0.88);
-            this.specGfx.fillRect(x, y, SPEC_BAR_W, barH);
+        for (let i = 0; i < this.spectrumBars.length; i++) {
+            const norm = dbToNorm(bins?.[i] ?? -60);
+            this.spectrumBars[i].style.height = `${Math.max(2, Math.round(norm * 46))}px`;
+            this.spectrumBars[i].style.opacity = `${0.35 + norm * 0.65}`;
         }
 
-        // Visual x-axis band markers so the complete horizontal axis reads clearly.
-        this.specGfx.fillStyle(0xf7d28a, 0.82);
-        this.specGfx.fillRect(startX, startY + SPEC_MAX_H + 5, 20, 2);
-        this.specGfx.fillRect(startX + 54, startY + SPEC_MAX_H + 5, 35, 2);
-        this.specGfx.fillRect(startX + 118, startY + SPEC_MAX_H + 5, 45, 2);
-    }
-
-    private drawFFTMix(mixer: MixerSnapshot): void {
-        this.mixGfx.clear();
-        this.mixGfx.setScale(this.hudScale);
-
-        const w = this.scene.scale.width;
-        const panelX = w - MIX_PANEL_W - SPEC_MARGIN;
-        const panelY = SPEC_TOP_Y + SPEC_PANEL_H + MIX_GAP;
-        const labelX = panelX + 12;
-        const barX = panelX + 52;
-        const barW = MIX_PANEL_W - 82;
         const rows = [
-            { label: 'LOW',  db: mixer.lowDb,  gain: mixer.lowGainDb,  color: BAR_COLORS.low,  active: mixer.lowDucking },
-            { label: 'MID',  db: mixer.midDb,  gain: mixer.midGainDb,  color: BAR_COLORS.mid,  active: mixer.midCutting },
-            { label: 'HIGH', db: mixer.highDb, gain: mixer.highGainDb, color: BAR_COLORS.high, active: mixer.compressorEngaged },
+            { db: mixer.lowDb, gain: mixer.lowGainDb, active: mixer.lowDucking },
+            { db: mixer.midDb, gain: mixer.midGainDb, active: mixer.midCutting },
+            { db: mixer.highDb, gain: mixer.highGainDb, active: mixer.compressorEngaged },
         ];
-
-        this.mixGfx.fillStyle(0x000000, 0.28);
-        this.mixGfx.fillRoundedRect(panelX + 3, panelY + 3, MIX_PANEL_W, MIX_PANEL_H, 8);
-        this.mixGfx.fillStyle(0x211812, 0.92);
-        this.mixGfx.fillRoundedRect(panelX, panelY, MIX_PANEL_W, MIX_PANEL_H, 8);
-        this.mixGfx.lineStyle(2, 0x7d4b25, 0.95);
-        this.mixGfx.strokeRoundedRect(panelX, panelY, MIX_PANEL_W, MIX_PANEL_H, 8);
-
         rows.forEach((row, i) => {
-            const y = panelY + 23 + i * 18;
             const norm = dbToNorm(row.db);
-            this.mixGfx.fillStyle(0x110d09, 0.88);
-            this.mixGfx.fillRoundedRect(barX, y, barW, 9, 3);
-            this.mixGfx.fillStyle(row.color, row.active ? 1 : 0.72);
-            this.mixGfx.fillRoundedRect(barX, y, Math.max(3, barW * norm), 9, 3);
-
-            if (Math.abs(row.gain) > 0.25) {
-                this.mixGfx.fillStyle(row.gain < 0 ? 0xff604e : 0x9df8a6, 0.9);
-                this.mixGfx.fillRoundedRect(barX + barW - 18, y - 1, 16, 11, 3);
-            }
-
-            this.mixValueTexts[i].setText(`${row.label} ${row.gain >= 0 ? '+' : ''}${row.gain.toFixed(1)}dB`);
-            this.mixValueTexts[i].setPosition(this.sx(labelX), this.sy(y - 3));
-            this.mixValueTexts[i].setColor(row.active ? '#fff1a8' : '#dbc4a0');
+            this.mixRows[i].fill.style.width = `${Math.max(4, norm * 100)}%`;
+            this.mixRows[i].text.textContent = `${Math.round(row.db)}dB`;
+            this.mixRows[i].row.classList.toggle('active', row.active);
         });
     }
 
-    private createToolbar(): void {
-        const style: Phaser.Types.GameObjects.Text.TextStyle = {
-            fontSize: '9px',
-            color: '#f6d9a7',
-            fontFamily: 'monospace',
-            align: 'center',
-            stroke: '#2a1208',
-            strokeThickness: 2,
-        };
-
-        for (const tool of TOOLS) {
-            const icon = this.scene.add.image(0, 0, `tool-icon-${tool.key}`)
-                .setOrigin(0.5)
-                .setScrollFactor(0)
-                .setDepth(102);
-            const text = this.scene.add.text(0, 0, tool.label, style)
-                .setOrigin(0.5)
-                .setScrollFactor(0)
-                .setDepth(102);
-            const zone = this.scene.add.zone(0, 0, TOOL_BOX_W, TOOL_BOX_H)
-                .setOrigin(0.5)
-                .setScrollFactor(0)
-                .setDepth(103)
-                .setInteractive({ useHandCursor: true });
-            zone.on('pointerdown', () => this.onToolSelect?.(tool.key));
-            this.toolIcons.push(icon);
-            this.toolTexts.push(text);
-            this.toolZones.push(zone);
-        }
-    }
-
-    private createZoomButtons(): void {
-        const style: Phaser.Types.GameObjects.Text.TextStyle = {
-            fontSize: '17px',
-            color: '#fff1a8',
-            fontFamily: 'monospace',
-            align: 'center',
-            fontStyle: 'bold',
-            stroke: '#2a1208',
-            strokeThickness: 3,
-        };
-
-        [{ label: '−', direction: -1 }, { label: '+', direction: 1 }].forEach((button) => {
-            const text = this.scene.add.text(0, 0, button.label, style)
-                .setOrigin(0.5)
-                .setScrollFactor(0)
-                .setDepth(102);
-            const zone = this.scene.add.zone(0, 0, ZOOM_BOX_W, ZOOM_BOX_H)
-                .setOrigin(0.5)
-                .setScrollFactor(0)
-                .setDepth(103)
-                .setInteractive({ useHandCursor: true });
-            zone.on('pointerdown', () => this.onZoom?.(button.direction));
-            this.zoomTexts.push(text);
-            this.zoomZones.push(zone);
-        });
-    }
-
-    private redrawInventory(): void {
-        if (this.destroyed || !this.inventoryGfx.scene) return;
+    private renderInventory(): void {
         if (!this.inventoryOpen) {
-            this.inventoryGfx.clear();
-            this.clearInventoryObjects();
+            clearChildren(this.inventoryPanel);
             return;
         }
 
-        this.inventoryGfx.clear();
-        this.clearInventoryObjects();
+        clearChildren(this.inventoryPanel);
+        const frame = makeEl('div', 'inventory-frame') as HTMLDivElement;
+        const header = makeEl('div', 'inventory-header') as HTMLDivElement;
+        header.innerHTML = '<span>Bag</span><span class="inventory-close-hint">TAB</span>';
+        frame.appendChild(header);
 
-        const w = this.scene.scale.width;
-        const h = this.scene.scale.height;
-        const x = Math.round((w - INVENTORY_W) / 2);
-        const y = Math.round((h - INVENTORY_H) / 2);
+        const content = makeEl('div', 'inventory-content') as HTMLDivElement;
 
-        this.inventoryGfx.fillStyle(0x000000, 0.42);
-        this.inventoryGfx.fillRoundedRect(x + 8, y + 8, INVENTORY_W, INVENTORY_H, 16);
-        this.inventoryGfx.fillStyle(0x754522, 0.98);
-        this.inventoryGfx.fillRoundedRect(x, y, INVENTORY_W, INVENTORY_H, 16);
-        this.inventoryGfx.lineStyle(6, 0x2a1208, 1);
-        this.inventoryGfx.strokeRoundedRect(x, y, INVENTORY_W, INVENTORY_H, 16);
-        this.inventoryGfx.lineStyle(2, 0xffde8f, 0.86);
-        this.inventoryGfx.strokeRoundedRect(x + 12, y + 12, INVENTORY_W - 24, INVENTORY_H - 24, 12);
-        this.inventoryGfx.fillStyle(0xf7ddb0, 0.96);
-        this.inventoryGfx.fillRoundedRect(x + INVENTORY_PAD, y + 62, INVENTORY_W - INVENTORY_PAD * 2, INVENTORY_H - 82, 10);
-
-        this.addInventoryText(x + INVENTORY_W / 2, y + 31, 'Inventory', 22, '#fff1a8', true).setOrigin(0.5);
-        this.addInventoryText(x + INVENTORY_W - 30, y + 31, 'TAB', 11, '#ffde8f', true).setOrigin(1, 0.5);
-
-        this.addInventoryText(x + 34, y + 78, 'Tools', 13, '#2b1609', true);
-        const toolY = y + 124;
-        TOOLS.forEach((tool, index) => {
-            const slotX = x + 42 + index * 70;
-            this.drawInventorySlot(slotX, toolY, INVENTORY_SLOT, INVENTORY_SLOT, tool.key === this.activeTool);
-            const icon = this.scene.add.image(slotX, toolY - 5, `tool-icon-${tool.key}`)
-                .setOrigin(0.5)
-                .setScale(1.05)
-                .setDepth(144)
-                .setScrollFactor(0);
-            this.inventoryObjects.push(icon);
-            this.addInventoryText(slotX, toolY + 22, tool.label, 9, '#2b1609', true).setOrigin(0.5);
-        });
-
-        this.addInventoryText(x + 34, y + 184, 'Seeds', 13, '#2b1609', true);
-        this.addInventoryText(x + 318, y + 184, 'Harvested plants', 13, '#2b1609', true);
-
-        SEED_CATALOG.forEach((item, index) => {
-            const row = index % 3;
-            const col = Math.floor(index / 3);
-            const sx = x + 48 + col * 132;
-            const sy = y + 230 + row * 45;
-            this.drawInventorySlot(sx, sy, 36, 36, false);
-            const seedIcon = this.scene.add.image(sx, sy + 8, `${item.variant}_stage2`)
-                .setOrigin(0.5, 1)
-                .setDepth(144)
-                .setScrollFactor(0);
-            seedIcon.setScale(Math.min(30 / Math.max(1, seedIcon.width), 30 / Math.max(1, seedIcon.height), 0.075));
-            this.inventoryObjects.push(seedIcon);
-            this.addInventoryText(sx + 24, sy - 12, `${item.seedName.replace(' Seeds', '')}`, 8, '#2b1609', true);
-            this.addInventoryText(sx + 24, sy + 3, `seeds × ${FarmState.getSeedCount(item.variant)}`, 8, '#5a341b', false);
-
-            const hx = x + 332 + col * 96;
-            const hy = sy;
-            this.drawInventorySlot(hx, hy, 36, 36, false);
-            const cropIcon = this.scene.add.image(hx, hy + 9, `${item.variant}_stage4`)
-                .setOrigin(0.5, 1)
-                .setDepth(144)
-                .setScrollFactor(0);
-            cropIcon.setScale(Math.min(30 / Math.max(1, cropIcon.width), 30 / Math.max(1, cropIcon.height), 0.075));
-            this.inventoryObjects.push(cropIcon);
-            this.addInventoryText(hx + 24, hy - 12, item.cropName, 8, '#2b1609', true);
-            this.addInventoryText(hx + 24, hy + 3, `plants × ${FarmState.getHarvestCount(item.variant)}`, 8, '#5a341b', false);
-        });
-
-        this.syncHudCamera();
-    }
-
-    private drawInventorySlot(x: number, y: number, width: number, height: number, selected: boolean): void {
-        this.inventoryGfx.fillStyle(selected ? 0x8d5a2d : 0xe8c482, selected ? 0.98 : 0.95);
-        this.inventoryGfx.fillRoundedRect(x - width / 2, y - height / 2, width, height, 8);
-        this.inventoryGfx.lineStyle(selected ? 3 : 2, selected ? 0xffde8f : 0x7b4a25, selected ? 1 : 0.85);
-        this.inventoryGfx.strokeRoundedRect(x - width / 2 + 2, y - height / 2 + 2, width - 4, height - 4, 7);
-    }
-
-    private addInventoryText(x: number, y: number, text: string, size: number, color: string, bold = false): Phaser.GameObjects.Text {
-        const obj = this.scene.add.text(x, y, text, {
-            fontSize: `${size}px`,
-            color,
-            fontFamily: 'monospace',
-            fontStyle: bold ? 'bold' : 'normal',
-            stroke: color === '#2b1609' || color === '#5a341b' ? undefined : '#2a1208',
-            strokeThickness: color === '#2b1609' || color === '#5a341b' ? 0 : 2,
-        }).setDepth(145).setScrollFactor(0);
-        this.inventoryObjects.push(obj);
-        return obj;
-    }
-
-    private clearInventoryObjects(): void {
-        for (const obj of this.inventoryObjects) {
-            if ((obj as Phaser.GameObjects.GameObject & { scene?: Phaser.Scene }).scene) obj.destroy();
+        const toolsSection = makeEl('section', 'inventory-section') as HTMLElement;
+        toolsSection.appendChild(makeEl('h3', '', 'Tools'));
+        const toolsGrid = makeEl('div', 'inventory-grid tools-grid') as HTMLDivElement;
+        for (const tool of TOOLS) {
+            const slot = makeEl('button', `inventory-slot tool-slot ${tool.key === this.activeTool ? 'active' : ''}`) as HTMLButtonElement;
+            slot.innerHTML = `<span class="inventory-tool-icon">${tool.icon}</span><span>${tool.label}</span>`;
+            slot.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                this.onToolSelect?.(tool.key);
+            });
+            toolsGrid.appendChild(slot);
         }
-        this.inventoryObjects = [];
-    }
+        toolsSection.appendChild(toolsGrid);
+        content.appendChild(toolsSection);
 
-    private reposition(scene: Phaser.Scene): void {
-        if (this.destroyed || !this.modeText.scene) return;
-        this.refreshHudScale();
+        const ownedSeeds = SEED_CATALOG.filter((item) => FarmState.getSeedCount(item.variant) > 0);
+        const ownedHarvests = SEED_CATALOG.filter((item) => FarmState.getHarvestCount(item.variant) > 0);
 
-        const w = scene.scale.width;
-        const h = scene.scale.height;
-        const specPanelX = w - SPEC_PANEL_W - SPEC_MARGIN;
-        const mixPanelY = SPEC_TOP_Y + SPEC_PANEL_H + MIX_GAP;
+        const bagSection = makeEl('section', 'inventory-section bag-section') as HTMLElement;
+        bagSection.appendChild(makeEl('h3', '', 'Plants / Seeds'));
+        const itemsGrid = makeEl('div', 'inventory-grid items-grid') as HTMLDivElement;
 
-        this.modeText.setPosition(this.sx(31), this.sy(27));
-        this.modeDescText.setPosition(this.sx(31), this.sy(50));
-        this.floorText.setPosition(this.sx(31), this.sy(74));
-        this.seedText.setPosition(this.sx(135), this.sy(74));
-
-        this.specTitleText.setPosition(this.sx(w - SPEC_MARGIN - 8), this.sy(SPEC_TOP_Y + 6));
-        this.mixTitleText.setPosition(this.sx(w - SPEC_MARGIN - 8), this.sy(mixPanelY + 6));
-        this.mixerStatusText.setPosition(this.sx(specPanelX + 12), this.sy(mixPanelY + 67));
-        this.moneyText.setPosition(this.sx(34), this.sy(h - 47));
-        this.saveText.setPosition(this.sx(170), this.sy(h - 37));
-        this.saveZone.setPosition(this.sx(170), this.sy(h - 37));
-        this.saveStatusText.setPosition(this.sx(34), this.sy(h - 22));
-
-        this.repositionToolbar(scene);
-        this.repositionZoomButtons(scene);
-        this.syncHudCamera();
-    }
-
-    private repositionToolbar(scene: Phaser.Scene): void {
-        const totalW = TOOLS.length * TOOL_BOX_W + (TOOLS.length - 1) * TOOL_GAP;
-        const startX = (scene.scale.width - totalW) / 2 + TOOL_BOX_W / 2;
-        const y = scene.scale.height - TOOLBAR_BOTTOM_MARGIN - TOOL_BOX_H / 2;
-
-        for (let i = 0; i < TOOLS.length; i++) {
-            const x = startX + i * (TOOL_BOX_W + TOOL_GAP);
-            this.toolIcons[i]?.setPosition(this.sx(x), this.sy(y - 8));
-            this.toolTexts[i]?.setPosition(this.sx(x), this.sy(y + 13));
-            this.toolZones[i]?.setPosition(this.sx(x), this.sy(y));
+        for (const item of ownedSeeds) {
+            itemsGrid.appendChild(this.createInventoryItem(
+                plantImageUrl(item.variant, 2),
+                item.seedName.replace(' Seeds', ''),
+                FarmState.getSeedCount(item.variant),
+                'Seed'
+            ));
         }
-    }
-
-    private repositionZoomButtons(scene: Phaser.Scene): void {
-        const totalW = 2 * ZOOM_BOX_W + ZOOM_GAP;
-        const startX = scene.scale.width - totalW - 16 + ZOOM_BOX_W / 2;
-        const y = scene.scale.height - TOOLBAR_BOTTOM_MARGIN - ZOOM_BOX_H / 2;
-
-        for (let i = 0; i < this.zoomTexts.length; i++) {
-            const x = startX + i * (ZOOM_BOX_W + ZOOM_GAP);
-            this.zoomTexts[i]?.setPosition(this.sx(x), this.sy(y));
-            this.zoomZones[i]?.setPosition(this.sx(x), this.sy(y));
+        for (const item of ownedHarvests) {
+            itemsGrid.appendChild(this.createInventoryItem(
+                plantImageUrl(item.variant, 4),
+                item.cropName,
+                FarmState.getHarvestCount(item.variant),
+                'Crop'
+            ));
         }
-    }
-
-    private redrawZoomButtons(): void {
-        if (this.destroyed || !this.zoomPanel.scene) return;
-        this.zoomPanel.clear();
-        this.zoomPanel.setScale(this.hudScale);
-
-        const totalW = 2 * ZOOM_BOX_W + ZOOM_GAP;
-        const startX = this.scene.scale.width - totalW - 16 + ZOOM_BOX_W / 2;
-        const y = this.scene.scale.height - TOOLBAR_BOTTOM_MARGIN - ZOOM_BOX_H / 2;
-
-        for (let i = 0; i < this.zoomTexts.length; i++) {
-            const cx = startX + i * (ZOOM_BOX_W + ZOOM_GAP);
-            const x = cx - ZOOM_BOX_W / 2;
-            const top = y - ZOOM_BOX_H / 2;
-            this.zoomPanel.fillStyle(0x000000, 0.24);
-            this.zoomPanel.fillRoundedRect(x + 2, top + 2, ZOOM_BOX_W, ZOOM_BOX_H, 8);
-            this.zoomPanel.fillStyle(0x5a341b, 0.94);
-            this.zoomPanel.fillRoundedRect(x, top, ZOOM_BOX_W, ZOOM_BOX_H, 8);
-            this.zoomPanel.lineStyle(2, 0xffde8f, 0.82);
-            this.zoomPanel.strokeRoundedRect(x + 2, top + 2, ZOOM_BOX_W - 4, ZOOM_BOX_H - 4, 6);
+        if (ownedSeeds.length === 0 && ownedHarvests.length === 0) {
+            itemsGrid.appendChild(makeEl('div', 'inventory-empty', 'Your bag has no seeds or harvested plants yet.'));
         }
+
+        bagSection.appendChild(itemsGrid);
+        content.appendChild(bagSection);
+        frame.appendChild(content);
+        this.inventoryPanel.appendChild(frame);
     }
 
-    private redrawToolbar(): void {
-        if (this.destroyed || !this.toolPanel.scene) return;
-        this.toolPanel.clear();
-        this.toolPanel.setScale(this.hudScale);
-
-        const totalW = TOOLS.length * TOOL_BOX_W + (TOOLS.length - 1) * TOOL_GAP;
-        const startX = (this.scene.scale.width - totalW) / 2 + TOOL_BOX_W / 2;
-        const y = this.scene.scale.height - TOOLBAR_BOTTOM_MARGIN - TOOL_BOX_H / 2;
-
-        this.toolPanel.fillStyle(0x000000, 0.22);
-        this.toolPanel.fillRoundedRect(startX - TOOL_BOX_W / 2 - 8 + 3, y - TOOL_BOX_H / 2 - 7 + 3, totalW + 16, TOOL_BOX_H + 14, 12);
-        this.toolPanel.fillStyle(0x2f2116, 0.92);
-        this.toolPanel.fillRoundedRect(startX - TOOL_BOX_W / 2 - 8, y - TOOL_BOX_H / 2 - 7, totalW + 16, TOOL_BOX_H + 14, 12);
-        this.toolPanel.lineStyle(2, 0x7d4b25, 1);
-        this.toolPanel.strokeRoundedRect(startX - TOOL_BOX_W / 2 - 8, y - TOOL_BOX_H / 2 - 7, totalW + 16, TOOL_BOX_H + 14, 12);
-
-        for (let i = 0; i < TOOLS.length; i++) {
-            const tool = TOOLS[i];
-            const selected = tool.key === this.activeTool;
-            const cx = startX + i * (TOOL_BOX_W + TOOL_GAP);
-            const x = cx - TOOL_BOX_W / 2;
-            const top = y - TOOL_BOX_H / 2;
-
-            this.toolPanel.fillStyle(selected ? 0x8d5a2d : 0x4b2d1a, selected ? 0.99 : 0.86);
-            this.toolPanel.fillRoundedRect(x, top, TOOL_BOX_W, TOOL_BOX_H, 8);
-            this.toolPanel.lineStyle(selected ? 3 : 1, selected ? 0xffde8f : 0xc28745, selected ? 1 : 0.72);
-            this.toolPanel.strokeRoundedRect(x + 3, top + 3, TOOL_BOX_W - 6, TOOL_BOX_H - 6, 7);
-            this.toolTexts[i]?.setColor(selected ? '#fff1a8' : '#f6d9a7');
-            this.toolIcons[i]?.setAlpha(selected ? 1 : 0.78);
-        }
-    }
-
-    private ensureToolIconTextures(): void {
-        const scene = this.scene;
-        if (scene.textures.exists('tool-icon-hoe')) return;
-
-        const makeIcon = (key: string, draw: (g: Phaser.GameObjects.Graphics) => void): void => {
-            const g = scene.add.graphics();
-            draw(g);
-            g.generateTexture(key, 32, 32);
-            g.destroy();
-        };
-
-        makeIcon('tool-icon-pickaxe', (g) => {
-            g.lineStyle(4, 0x4f3822, 1); g.lineBetween(10, 24, 23, 10);
-            g.lineStyle(4, 0xc8c8c8, 1); g.lineBetween(7, 10, 25, 7);
-            g.lineStyle(2, 0xf2e2b2, 1); g.lineBetween(20, 7, 27, 14);
-        });
-        makeIcon('tool-icon-axe', (g) => {
-            g.lineStyle(4, 0x4f3822, 1); g.lineBetween(13, 25, 22, 8);
-            g.fillStyle(0xc8c8c8, 1); g.fillTriangle(17, 7, 28, 10, 19, 18);
-            g.lineStyle(2, 0x707070, 1); g.strokeTriangle(17, 7, 28, 10, 19, 18);
-        });
-        makeIcon('tool-icon-hoe', (g) => {
-            g.lineStyle(4, 0x4f3822, 1); g.lineBetween(12, 25, 22, 7);
-            g.lineStyle(4, 0xc8c8c8, 1); g.lineBetween(21, 7, 29, 11);
-            g.lineStyle(3, 0xc8c8c8, 1); g.lineBetween(28, 11, 24, 18);
-        });
-        makeIcon('tool-icon-watering_can', (g) => {
-            g.fillStyle(0x6bb6d8, 1); g.fillRoundedRect(8, 13, 15, 11, 3);
-            g.lineStyle(3, 0x3a7f9c, 1); g.strokeRoundedRect(8, 13, 15, 11, 3);
-            g.lineStyle(3, 0x6bb6d8, 1); g.lineBetween(22, 15, 29, 11);
-            g.lineStyle(2, 0xa9e8ff, 0.8); g.strokeCircle(12, 13, 5);
-            g.fillStyle(0xa9e8ff, 0.9); g.fillCircle(28, 17, 2); g.fillCircle(25, 21, 2);
-        });
+    private createInventoryItem(src: string, label: string, count: number, tag: string): HTMLDivElement {
+        const slot = makeEl('div', 'inventory-slot item-slot') as HTMLDivElement;
+        const img = makeEl('img', 'inventory-item-img') as HTMLImageElement;
+        img.src = src;
+        img.alt = label;
+        const meta = makeEl('div', 'inventory-item-meta') as HTMLDivElement;
+        meta.append(makeEl('strong', '', label), makeEl('span', '', `${tag} × ${count}`));
+        slot.append(img, meta);
+        return slot;
     }
 }

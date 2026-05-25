@@ -25,7 +25,7 @@ export const SEED_CATALOG: SeedDefinition[] = [
     { variant: 'vinyl_vine',       cropName: 'Vinyl Vine',       seedName: 'Vinyl Vine Seeds',       price: 16 },
 ];
 
-const MANUAL_SAVE_KEY = 'fft_stardew_manual_save_v16';
+const MANUAL_SAVE_KEY = 'fft_stardew_manual_save_v17';
 
 export interface PlantSessionState {
     /** Empty planters have isPlanted=false and no visible crop. */

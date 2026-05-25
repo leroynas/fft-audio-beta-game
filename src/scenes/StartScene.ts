@@ -72,7 +72,7 @@ export class StartScene extends Phaser.Scene {
         this.cameras.main.setBackgroundColor('#0a0a1a');
 
         // Title
-        this.add.text(cx, cy - 116, "Daphne's Supportive Narrative Demo", {
+        this.add.text(cx, cy - 116, 'Supportive Narrative Demo', {
             fontSize: '36px',
             color: '#66ff88',
             fontFamily: 'monospace',
@@ -80,7 +80,7 @@ export class StartScene extends Phaser.Scene {
         }).setOrigin(0.5);
 
         // Subtitle
-        this.add.text(cx, cy - 62, 'Mini-Stardew audio research game · Player character: Daphne', {
+        this.add.text(cx, cy - 62, 'Mini farming game for research on randomisation in game sound · Player: Daphne', {
             fontSize: '18px',
             color: '#aaaacc',
             fontFamily: 'monospace',
@@ -92,8 +92,8 @@ export class StartScene extends Phaser.Scene {
             '',
             'Mode A — chooses a random sample from a prepared list',
             '          for example: stone_01, stone_02, stone_03.',
-            'Mode B — generates adaptive data from FFT / FluCoMa-style analysis',
-            '          so the sound can respond with more continuity.'
+            'Mode B — uses adaptive continuity and memory',
+            '          so variation follows the performer over time.'
         ].join('\n'), {
             fontSize: '13px',
             color: '#888899',
