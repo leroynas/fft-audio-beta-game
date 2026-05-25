@@ -30,14 +30,19 @@ const MANUAL_SAVE_KEY = 'fft_stardew_manual_save_v17';
 export interface PlantSessionState {
     /** Empty planters have isPlanted=false and no visible crop. */
     isPlanted?: boolean;
+
     /** The actual seed/crop planted in this specific planter. */
     plantedVariant?: PlantVariant;
+
     /** Growth stage for planted crops. Stage 4 is mature/harvestable. */
     stage: PlantGrowthStage;
+
     /** Growth timer only advances after the crop has been watered. */
     elapsedMs: number;
+
     /** True after the first watering; false crops stay as seeds. */
     watered?: boolean;
+
     harvested?: boolean;
 }
 
@@ -114,7 +119,10 @@ class FarmStateStore {
         this.state.coins -= total;
         this.state.seeds[variant] = (this.state.seeds[variant] ?? 0) + amount;
 
-        return { ok: true, message: `Bought ${amount}× ${item.seedName}. Save progress to keep it after refresh.` };
+        return {
+            ok: true,
+            message: `Bought ${amount}× ${item.seedName}. Save progress to keep it after refresh.`,
+        };
     }
 
     addHarvest(variant: PlantVariant, amount = 1): void {
@@ -149,6 +157,7 @@ class FarmStateStore {
 
     markPlantHarvested(id: string): void {
         const current = this.state.plants[id];
+
         this.state.plants[id] = {
             ...current,
             isPlanted: false,
@@ -162,7 +171,11 @@ class FarmStateStore {
 
     saveProgress(): void {
         try {
-            const snapshot = { ...this.snapshot(), savedAt: Date.now() };
+            const snapshot = {
+                ...this.snapshot(),
+                savedAt: Date.now(),
+            };
+
             localStorage.setItem(MANUAL_SAVE_KEY, JSON.stringify(snapshot));
             this.savedThisSession = true;
         } catch (err) {
@@ -173,6 +186,7 @@ class FarmStateStore {
     resetProgress(): void {
         this.state = createNewState();
         this.savedThisSession = false;
+
         try {
             localStorage.removeItem(MANUAL_SAVE_KEY);
         } catch (err) {
@@ -196,6 +210,7 @@ class FarmStateStore {
             if (!raw) return;
 
             const parsed = JSON.parse(raw) as Partial<FarmStateSnapshot>;
+
             this.state = {
                 coins: typeof parsed.coins === 'number' ? parsed.coins : 50,
                 seeds: { ...emptyVariantRecord(0), ...(parsed.seeds ?? {}) },

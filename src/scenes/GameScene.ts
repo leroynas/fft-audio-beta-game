@@ -1,15 +1,13 @@
 /**
- * GameScene.ts — Main outdoor mini-Stardew map.
+ * GameScene.ts — Main outdoor farm map.
  *
  * Changes in this version:
- *  - Smaller world, no title-screen delay.
- *  - Grass centre around the house.
- *  - Walking down transitions visually into sand and then water.
- *  - Stone paths connect the house to the store and the beach.
- *  - Store is now left of the house.
- *  - Small planter plot sits in the grass corridor between shop and house.
- *  - Clean, tight stone paths align to the actual building front edge.
- *  - Planter plot has one seamless stone base around and between all planters.
+ *  - Wider village world.
+ *  - Houses and placeholder buildings are spread across the full map.
+ *  - Clean stone road grid connects the village rows.
+ *  - Stone roads stop before the beach, so the sand/water transition stays clean.
+ *  - Main house, store and planters remain central enough for gameplay.
+ *  - Planter plot keeps one seamless stone base around and between planters.
  *  - Plant sprites are vertically aligned to their planter beds.
  */
 import Phaser from 'phaser';
@@ -23,31 +21,42 @@ import { extensionCandidates, loadFirstAvailableImageTexture } from '../utils/Te
 
 // ── World configuration ──────────────────────────────────────
 
-/** Village-sized outdoor map: more lower grass space before the beach for future houses/props. */
-const WORLD_W = 3400;
-const WORLD_H = 2200;
+/**
+ * Wider outdoor map so the village can breathe.
+ * The playable grass area is intentionally large before the beach starts.
+ */
+const WORLD_W = 4200;
+const WORLD_H = 2400;
 
 const HOUSE_X = 1050;
-const HOUSE_Y = 520;
-const STORE_X = 520;
-const STORE_Y = 520;
+const HOUSE_Y = 560;
+
+const STORE_X = 480;
+const STORE_Y = 560;
+
 const BEACH_PATH_X = HOUSE_X;
 const PLANT_AREA_X = Math.round((STORE_X + HOUSE_X) / 2);
 
-// One consistent stone-path width. Keep the geometry straight and tight:
-// no oversized aprons or loose side blocks beside the house.
+// One consistent stone-path width.
 const PATH_W = 56;
 
-// The horizontal path now starts at the actual front/bottom edge of the
-// building sprites, so the stone visually locks to the porch instead of
-// floating a few pixels below it.
+// Main village road rows.
+// These rows stay in grass and are used for building-front alignment.
+const NORTH_ROW_PATH_Y = 220;
 const MAIN_PATH_Y = HOUSE_Y;
-const NORTH_ROW_PATH_Y = 190;
-const SOUTH_ROW_PATH_Y = 1050;
-const WEST_VILLAGE_PATH_X = 220;
-const MID_VILLAGE_PATH_X = 1460;
-const EAST_VILLAGE_PATH_X = 2350;
-const FAR_VILLAGE_PATH_X = 3180;
+const SOUTH_ROW_PATH_Y = 1120;
+const LOWER_FIELD_PATH_Y = 1480;
+
+// Vertical village road columns.
+// These spread the houses over the full width of the map.
+const WEST_VILLAGE_PATH_X = 260;
+const MID_VILLAGE_PATH_X = 1580;
+const EAST_VILLAGE_PATH_X = 2860;
+const FAR_VILLAGE_PATH_X = 3920;
+
+// Useful map boundaries.
+const ROAD_LEFT = 150;
+const ROAD_RIGHT = WORLD_W - 150;
 
 const PLANT_COLUMN_SPACING = 118;
 const PLANT_ROW_SPACING = 120;
@@ -60,7 +69,7 @@ const PLANT_ROW_Y2 = PLANT_ROW_Y1 + PLANT_ROW_SPACING;
 const PLANT_BED_Y_OFFSET = 20;
 const PLANT_SPRITE_Y_OFFSET = PLANT_BED_Y_OFFSET;
 
-// One clean stone base under the planter area. This removes the broken-looking
+// One clean stone base under the planter area. This removes broken-looking
 // mini path pieces and gives every planter a walkable stone border.
 const PLANT_BED_W = 62;
 const PLANT_BED_H = 58;
@@ -69,8 +78,8 @@ const PLANT_GRID_LEFT = PLANT_AREA_X - PLANT_COLUMN_SPACING - PLANT_BED_W / 2 - 
 const PLANT_GRID_RIGHT = PLANT_AREA_X + PLANT_COLUMN_SPACING + PLANT_BED_W / 2 + PLANT_STONE_MARGIN;
 const PLANT_GRID_BOTTOM = PLANT_ROW_Y2 + PLANT_BED_Y_OFFSET + PLANT_BED_H / 2 + PLANT_STONE_MARGIN;
 
-const GRASS_END_Y = 1480;
-const SAND_END_Y = 1740;
+const GRASS_END_Y = 1580;
+const SAND_END_Y = 1880;
 const WATER_START_Y = SAND_END_Y;
 
 const PLAYER_START_X = HOUSE_X;
@@ -89,89 +98,115 @@ const TOOL_HOTKEYS: { keyCode: number; tool: ToolType }[] = [
 
 /** Base world layers: grass → sand → water when walking downward. */
 const BASE_FLOOR_ZONES: FloorZone[] = [
-    { x: 0, y: 0,           width: WORLD_W, height: GRASS_END_Y, type: 'grass', color: 0x4c5f38 },
-    { x: 0, y: GRASS_END_Y, width: WORLD_W, height: SAND_END_Y - GRASS_END_Y, type: 'sand',  color: 0xd6be7f },
-    { x: 0, y: WATER_START_Y,width: WORLD_W, height: WORLD_H - WATER_START_Y, type: 'water', color: 0x3c9aaa },
+    { x: 0, y: 0,             width: WORLD_W, height: GRASS_END_Y, type: 'grass', color: 0x4c5f38 },
+    { x: 0, y: GRASS_END_Y,   width: WORLD_W, height: SAND_END_Y - GRASS_END_Y, type: 'sand', color: 0xd6be7f },
+    { x: 0, y: WATER_START_Y, width: WORLD_W, height: WORLD_H - WATER_START_Y, type: 'water', color: 0x3c9aaa },
 ];
 
-/** Stone path overlays. These are checked before base zones for footstep logic. */
+/**
+ * Stone path overlays.
+ * These are checked before base zones for footstep logic.
+ *
+ * The road network is intentionally simple:
+ *  - 4 horizontal village roads.
+ *  - 4 vertical village roads.
+ *  - A local planter stone base.
+ *  - No stone road continues into the beach.
+ */
 const PATH_ZONES: FloorZone[] = [
-    // Main shop → house path. All co-ordinates are integer-aligned and use the
-    // same width so the stone texture keeps a clean grid without odd overlaps.
+    // Northern village road.
     {
-        x: STORE_X - PATH_W / 2,
-        y: MAIN_PATH_Y,
-        width: (HOUSE_X - STORE_X) + PATH_W,
-        height: PATH_W,
-        type: 'stone',
-        color: 0x8a8272,
-    },
-    // Northern village road. Houses above the main buildings connect here, but
-    // this road stays in the grass/village area only.
-    {
-        x: 160,
+        x: ROAD_LEFT,
         y: NORTH_ROW_PATH_Y,
-        width: 3100,
+        width: ROAD_RIGHT - ROAD_LEFT,
         height: PATH_W,
         type: 'stone',
         color: 0x8a8272,
     },
-    // Southern village road stops before the sand/beach transition. No stone
-    // walkway is drawn on the beach itself.
+
+    // Main road: store, house and central village access.
     {
-        x: 160,
-        y: SOUTH_ROW_PATH_Y,
-        width: 3100,
+        x: ROAD_LEFT,
+        y: MAIN_PATH_Y,
+        width: ROAD_RIGHT - ROAD_LEFT,
         height: PATH_W,
         type: 'stone',
         color: 0x8a8272,
     },
+
+    // Southern village road.
+    {
+        x: ROAD_LEFT,
+        y: SOUTH_ROW_PATH_Y,
+        width: ROAD_RIGHT - ROAD_LEFT,
+        height: PATH_W,
+        type: 'stone',
+        color: 0x8a8272,
+    },
+
+    // Lower grass road near the beach. It stops before the sand area.
+    {
+        x: ROAD_LEFT,
+        y: LOWER_FIELD_PATH_Y,
+        width: ROAD_RIGHT - ROAD_LEFT,
+        height: PATH_W,
+        type: 'stone',
+        color: 0x8a8272,
+    },
+
+    // West vertical road.
     {
         x: WEST_VILLAGE_PATH_X - PATH_W / 2,
         y: NORTH_ROW_PATH_Y,
         width: PATH_W,
-        height: SOUTH_ROW_PATH_Y - NORTH_ROW_PATH_Y + PATH_W,
+        height: LOWER_FIELD_PATH_Y - NORTH_ROW_PATH_Y + PATH_W,
         type: 'stone',
         color: 0x8a8272,
     },
+
+    // Mid vertical road.
     {
         x: MID_VILLAGE_PATH_X - PATH_W / 2,
         y: NORTH_ROW_PATH_Y,
         width: PATH_W,
-        height: SOUTH_ROW_PATH_Y - NORTH_ROW_PATH_Y + PATH_W,
+        height: LOWER_FIELD_PATH_Y - NORTH_ROW_PATH_Y + PATH_W,
         type: 'stone',
         color: 0x8a8272,
     },
+
+    // East vertical road.
     {
         x: EAST_VILLAGE_PATH_X - PATH_W / 2,
         y: NORTH_ROW_PATH_Y,
         width: PATH_W,
-        height: SOUTH_ROW_PATH_Y - NORTH_ROW_PATH_Y + PATH_W,
+        height: LOWER_FIELD_PATH_Y - NORTH_ROW_PATH_Y + PATH_W,
         type: 'stone',
         color: 0x8a8272,
     },
-    // Far path now stops in the grass before the beach. The beach-side house is
-    // intentionally not connected by stone so sand stays sand.
+
+    // Far east vertical road.
     {
         x: FAR_VILLAGE_PATH_X - PATH_W / 2,
         y: NORTH_ROW_PATH_Y,
         width: PATH_W,
-        height: GRASS_END_Y - NORTH_ROW_PATH_Y - PATH_W,
+        height: LOWER_FIELD_PATH_Y - NORTH_ROW_PATH_Y + PATH_W,
         type: 'stone',
         color: 0x8a8272,
     },
-    // House downward route also stops before the sand line. This keeps the
-    // beach visually clean and avoids stone tiles cutting through the shore.
+
+    // Dedicated route from the main house area down toward the lower grass road.
+    // It still stops before the beach.
     {
         x: BEACH_PATH_X - PATH_W / 2,
         y: MAIN_PATH_Y,
         width: PATH_W,
-        height: GRASS_END_Y - MAIN_PATH_Y - PATH_W,
+        height: LOWER_FIELD_PATH_Y - MAIN_PATH_Y + PATH_W,
         type: 'stone',
         color: 0x8a8272,
     },
-    // Filled farm-stone area from the house path down through the whole
-    // planter grid. It remains in the grass area and aligns with the main path.
+
+    // Filled farm-stone area from the house path down through the planter grid.
+    // It remains in the grass area and aligns with the main path.
     {
         x: PLANT_GRID_LEFT,
         y: MAIN_PATH_Y,
@@ -190,20 +225,25 @@ const FLOOR_DETECTION_ZONES: FloorZone[] = [
 
 /** Every plant visual added under public/assets/sprites/plants. */
 const PLANT_ASSETS: Record<PlantVariant, { folder: string; filePrefix: string }> = {
-    beat_beet:         { folder: 'Beat_Beet',         filePrefix: 'Beatbeet' },
-    crescendo_carrot:  { folder: 'Crescendo_Carrot',  filePrefix: 'CrescendoCarrot' },
-    echo_eggplant:     { folder: 'Echo_Eggplant',     filePrefix: 'EchoEggplant' },
-    melody_melon:      { folder: 'Melody_Melon',      filePrefix: 'MelodyMelon' },
-    rhythm_radish:     { folder: 'Rhythm_Radish',     filePrefix: 'RhythmRadish' },
-    treble_turnip:     { folder: 'Treble_Turnip',     filePrefix: 'TrebleTurnip' },
-    vinyl_vine:        { folder: 'Vinyl_Vine',        filePrefix: 'VinylVine' },
+    beat_beet:        { folder: 'Beat_Beet',        filePrefix: 'Beatbeet' },
+    crescendo_carrot: { folder: 'Crescendo_Carrot', filePrefix: 'CrescendoCarrot' },
+    echo_eggplant:    { folder: 'Echo_Eggplant',    filePrefix: 'EchoEggplant' },
+    melody_melon:     { folder: 'Melody_Melon',     filePrefix: 'MelodyMelon' },
+    rhythm_radish:    { folder: 'Rhythm_Radish',    filePrefix: 'RhythmRadish' },
+    treble_turnip:    { folder: 'Treble_Turnip',    filePrefix: 'TrebleTurnip' },
+    vinyl_vine:       { folder: 'Vinyl_Vine',       filePrefix: 'VinylVine' },
 };
 
-/** Small non-building props kept close enough to be useful without making the map feel empty. */
+/** Small non-building props spread around main useful areas. */
 const PROPS: PropConfig[] = [
     { x: HOUSE_X + 190, y: HOUSE_Y + 65, type: 'barrel', label: 'Barrel' },
-    { x: HOUSE_X - 150, y: HOUSE_Y + 78, type: 'keys',   label: 'Metal Keys' },
-    { x: STORE_X + 120, y: STORE_Y + 80, type: 'cloth',  label: 'Cloth Hanging' },
+    { x: HOUSE_X - 150, y: HOUSE_Y + 78, type: 'keys', label: 'Metal Keys' },
+    { x: STORE_X + 120, y: STORE_Y + 80, type: 'cloth', label: 'Cloth Hanging' },
+
+    // Extra small props so the wider map does not feel completely empty.
+    { x: WEST_VILLAGE_PATH_X + 90, y: SOUTH_ROW_PATH_Y + 80, type: 'barrel', label: 'Village Barrel' },
+    { x: EAST_VILLAGE_PATH_X - 90, y: NORTH_ROW_PATH_Y + 80, type: 'cloth', label: 'Village Cloth' },
+    { x: FAR_VILLAGE_PATH_X - 120, y: LOWER_FIELD_PATH_Y + 80, type: 'keys', label: 'Lost Keys' },
 ];
 
 const EXTRA_PROPS: PropConfig[] = [
@@ -224,17 +264,26 @@ const EXTRA_PROPS: PropConfig[] = [
         targetScene: 'StoreScene',
     },
 
-    // Structural village placeholders. They are spread across the map now,
-    // including one near the beach, so the outdoor scene reads more like a
-    // village that can keep expanding later.
-    { x: 220,  y: 190,  type: 'building', label: 'Village House', buildingVariant: 'house' },
-    { x: 1460, y: 190,  type: 'building', label: 'Village House', buildingVariant: 'house' },
-    { x: 2350, y: 190,  type: 'building', label: 'Village House', buildingVariant: 'house' },
-    { x: 3180, y: 190,  type: 'building', label: 'Village House', buildingVariant: 'house' },
-    { x: 3180, y: 720,  type: 'building', label: 'Future Store',   buildingVariant:'store' },
-    { x: 220,  y: 1050, type: 'building', label: 'Village House', buildingVariant: 'house' },
-    { x: 1820, y: 1050, type: 'building', label: 'Village House', buildingVariant: 'house' },
-    { x: 1460, y: 1510, type: 'building', label: 'Beach House',   buildingVariant: 'house' },
+    // Northern row — spread widely over the full map.
+    { x: WEST_VILLAGE_PATH_X, y: NORTH_ROW_PATH_Y, type: 'building', label: 'Northwest House', buildingVariant: 'house' },
+    { x: MID_VILLAGE_PATH_X,  y: NORTH_ROW_PATH_Y, type: 'building', label: 'North House',     buildingVariant: 'house' },
+    { x: EAST_VILLAGE_PATH_X, y: NORTH_ROW_PATH_Y, type: 'building', label: 'Northeast House', buildingVariant: 'house' },
+    { x: FAR_VILLAGE_PATH_X,  y: NORTH_ROW_PATH_Y, type: 'building', label: 'Far East House',  buildingVariant: 'house' },
+
+    // Main row — central buildings and future expansion.
+    { x: 2140, y: MAIN_PATH_Y, type: 'building', label: 'Future Store', buildingVariant: 'store' },
+    { x: 3420, y: MAIN_PATH_Y, type: 'building', label: 'East House',   buildingVariant: 'house' },
+
+    // Southern row — more space between houses.
+    { x: WEST_VILLAGE_PATH_X, y: SOUTH_ROW_PATH_Y, type: 'building', label: 'Southwest House', buildingVariant: 'house' },
+    { x: MID_VILLAGE_PATH_X,  y: SOUTH_ROW_PATH_Y, type: 'building', label: 'South House',     buildingVariant: 'house' },
+    { x: EAST_VILLAGE_PATH_X, y: SOUTH_ROW_PATH_Y, type: 'building', label: 'Southeast House', buildingVariant: 'house' },
+    { x: FAR_VILLAGE_PATH_X,  y: SOUTH_ROW_PATH_Y, type: 'building', label: 'Far South House', buildingVariant: 'house' },
+
+    // Lower grass row near the beach. Still on grass, so no stone road cuts into sand.
+    { x: 520,  y: LOWER_FIELD_PATH_Y, type: 'building', label: 'Lower Field House', buildingVariant: 'house' },
+    { x: 2140, y: LOWER_FIELD_PATH_Y, type: 'building', label: 'Lower Store',       buildingVariant: 'store' },
+    { x: 3600, y: LOWER_FIELD_PATH_Y, type: 'building', label: 'Beachside House',   buildingVariant: 'house' },
 
     // Small planting plot in the grass corridor between the shop and the house.
     // The x-axis alignment is kept, with stone aisles between/around the planters.
@@ -246,7 +295,7 @@ const EXTRA_PROPS: PropConfig[] = [
     { x: PLANT_AREA_X + PLANT_COLUMN_SPACING, y: PLANT_ROW_Y2 + PLANT_SPRITE_Y_OFFSET, type: 'plant', label: 'Empty Planter', plantVariant: 'vinyl_vine' },
 ];
 
-/** Distance (px) the player must walk before the next footstep fires. */
+/** Distance in pixels the player must walk before the next footstep fires. */
 const STEP_DISTANCE = 48;
 
 // ──────────────────────────────────────────────────────────────
@@ -315,8 +364,8 @@ export class GameScene extends Phaser.Scene {
             );
         }
 
-        // // Backward-compatible default keys. Existing code that still asks for
-        // // plant_stage1, plant_stage2, etc. will use Vinyl Vine.
+        // Backward-compatible default keys. Existing code that still asks for
+        // plant_stage1, plant_stage2, etc. will use Vinyl Vine.
         loadImageOnce('plant_stage1', '/assets/sprites/plants/Vinyl_Vine/VinylVine_01_Seed.png');
         loadImageOnce('plant_stage2', '/assets/sprites/plants/Vinyl_Vine/VinylVine_02_Sprout.png');
         loadImageOnce('plant_stage3', '/assets/sprites/plants/Vinyl_Vine/VinylVine_03_Growing.png');
@@ -355,7 +404,7 @@ export class GameScene extends Phaser.Scene {
             this.drawGrid();
         }
 
-        for (const cfg of [ ...PROPS, ...EXTRA_PROPS ]) {
+        for (const cfg of [...PROPS, ...EXTRA_PROPS]) {
             const prop = new Prop(
                 this,
                 cfg.x,
@@ -377,7 +426,7 @@ export class GameScene extends Phaser.Scene {
         this.player = new Player(this, spawnX, spawnY);
 
         for (const prop of this.props) {
-           if (prop.collider) {
+            if (prop.collider) {
                 this.physics.add.collider(
                     this.player.sprite,
                     prop.collider
@@ -487,7 +536,7 @@ export class GameScene extends Phaser.Scene {
         });
     }
 
-    // ── Update (every frame) ─────────────────────────────────
+    // ── Update every frame ────────────────────────────────────
 
     update(_time: number, delta: number): void {
         if (this.isChangingScene) return;
@@ -553,7 +602,6 @@ export class GameScene extends Phaser.Scene {
 
     // ── World drawing helpers ─────────────────────────────────
 
-
     private ensureOutdoorFallbackTextures(): void {
         this.createCheckerTile('tile-fallback', 0x4c5f38, 0x3d5130, 0x5c7142);
         this.createCheckerTile('tile-grass', 0x4c5f38, 0x3d5130, 0x5c7142);
@@ -581,7 +629,7 @@ export class GameScene extends Phaser.Scene {
     private applyReplaceableOutdoorTiles(): void {
         const replacements: { type: FloorZone['type']; key: string; base: string }[] = [
             { type: 'grass', key: 'tile-grass-custom', base: '/assets/tiles/grass/grass' },
-            { type: 'sand', key: 'tile-sand-custom', base: '/assets/tiles/beach/sand' },
+            { type: 'sand',  key: 'tile-sand-custom',  base: '/assets/tiles/beach/sand' },
             { type: 'water', key: 'tile-water-custom', base: '/assets/tiles/beach/water' },
             { type: 'stone', key: 'tile-stone-path-custom', base: '/assets/tiles/path/stone' },
         ];
@@ -637,13 +685,13 @@ export class GameScene extends Phaser.Scene {
             zone.height,
             safeTextureKey
         );
+
         ts.setOrigin(0, 0).setDepth(depth);
         (this.floorTileSpritesByType[zone.type] ??= []).push(ts);
 
         if (zone.type === 'stone') {
             // Keep every stone segment on the same world texture grid. This
-            // prevents visible pattern jumps where the house path, beach path
-            // and planter area meet.
+            // prevents visible pattern jumps where path rectangles meet.
             ts.tileScaleX = 1;
             ts.tileScaleY = 1;
             ts.tilePositionX = zone.x % 128;
@@ -660,7 +708,7 @@ export class GameScene extends Phaser.Scene {
     /** Decorative breakup layer to hide obvious repeated tile seams. */
     private drawTerrainBreakup(): void {
         const grass = this.add.graphics().setDepth(0.35);
-        for (let i = 0; i < 180; i++) {
+        for (let i = 0; i < 230; i++) {
             const x = this.seededRange(i, 11, 40, WORLD_W - 40);
             const y = this.seededRange(i, 12, 40, GRASS_END_Y - 40);
             const w = this.seededRange(i, 13, 12, 42);
@@ -670,7 +718,7 @@ export class GameScene extends Phaser.Scene {
         }
 
         const sand = this.add.graphics().setDepth(0.35);
-        for (let i = 0; i < 90; i++) {
+        for (let i = 0; i < 110; i++) {
             const x = this.seededRange(i, 21, 25, WORLD_W - 25);
             const y = this.seededRange(i, 22, GRASS_END_Y + 14, SAND_END_Y - 18);
             const r = this.seededRange(i, 23, 1.2, 3.6);
@@ -692,11 +740,12 @@ export class GameScene extends Phaser.Scene {
     }
 
     /**
-     * Keep stone paths visually clean. Earlier versions added random crack/pebble
-     * marks, but those read as loose stone bumps near the buildings.
+     * Keep stone paths visually clean.
+     * Earlier versions added random crack/pebble marks, but those read as loose
+     * bumps near the buildings and made the road edges feel messy.
      */
     private drawPathBreakup(): void {
-        // Intentionally empty: the stone texture itself is used, with straight path geometry.
+        // Intentionally empty. The stone texture itself is used with straight geometry.
     }
 
     private seededRange(index: number, salt: number, min: number, max: number): number {
@@ -723,7 +772,7 @@ export class GameScene extends Phaser.Scene {
         // Intentionally empty. The texture and rectangular geometry provide the edge.
     }
 
-    /** Places small solid planter sprites in the centre grass corridor before plant props are drawn. */
+    /** Places small solid planter sprites before plant props are drawn. */
     private drawPlantingArea(): void {
         const planterPositions = [
             { x: PLANT_AREA_X - PLANT_COLUMN_SPACING, y: PLANT_ROW_Y1 },
@@ -743,7 +792,12 @@ export class GameScene extends Phaser.Scene {
                 .setScale(0.13)
                 .setDepth(1.55);
 
-            this.addSolidPlanterCollider(bedX, bedY + 2, bed.displayWidth * 0.72, bed.displayHeight * 0.38);
+            this.addSolidPlanterCollider(
+                bedX,
+                bedY + 2,
+                bed.displayWidth * 0.72,
+                bed.displayHeight * 0.38
+            );
         }
     }
 
@@ -753,21 +807,21 @@ export class GameScene extends Phaser.Scene {
         this.solidPlanters.push(collider);
     }
 
-
     private drawGrid(): void {
         const gfx = this.add.graphics();
         gfx.lineStyle(1, 0xffffff, 0.04);
         const step = 200;
+
         for (let x = 0; x <= WORLD_W; x += step) {
             gfx.lineBetween(x, 0, x, WORLD_H);
         }
+
         for (let y = 0; y <= WORLD_H; y += step) {
             gfx.lineBetween(0, y, WORLD_W, y);
         }
+
         gfx.setDepth(50);
     }
-
-
 
     private selectTool(tool: ToolType, playSound = false): void {
         if (this.currentTool === tool) return;
@@ -796,7 +850,9 @@ export class GameScene extends Phaser.Scene {
 
     private tryUnlockAudio(): void {
         if (this.audioUnlocked) return;
+
         this.audioUnlocked = true;
+
         void this.audioManager.ensureStarted().catch((err) => {
             console.warn('[GameScene] Audio could not be started:', err);
         });
