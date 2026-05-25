@@ -317,10 +317,10 @@ export class GameScene extends Phaser.Scene {
 
         // // Backward-compatible default keys. Existing code that still asks for
         // // plant_stage1, plant_stage2, etc. will use Vinyl Vine.
-        // loadImageOnce('plant_stage1', '/assets/sprites/plants/Vinyl_Vine/VinylVine_01_Seed.png');
-        // loadImageOnce('plant_stage2', '/assets/sprites/plants/Vinyl_Vine/VinylVine_02_Sprout.png');
-        // loadImageOnce('plant_stage3', '/assets/sprites/plants/Vinyl_Vine/VinylVine_03_Growing.png');
-        // loadImageOnce('plant_stage4', '/assets/sprites/plants/Vinyl_Vine/VinylVine_04_Mature.png');
+        loadImageOnce('plant_stage1', '/assets/sprites/plants/Vinyl_Vine/VinylVine_01_Seed.png');
+        loadImageOnce('plant_stage2', '/assets/sprites/plants/Vinyl_Vine/VinylVine_02_Sprout.png');
+        loadImageOnce('plant_stage3', '/assets/sprites/plants/Vinyl_Vine/VinylVine_03_Growing.png');
+        loadImageOnce('plant_stage4', '/assets/sprites/plants/Vinyl_Vine/VinylVine_04_Mature.png');
     }
 
     // ── Create ────────────────────────────────────────────────
