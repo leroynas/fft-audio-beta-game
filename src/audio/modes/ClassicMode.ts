@@ -17,16 +17,31 @@ import { FloorType, PropType } from '../../types';
 // Place your .mp3/.wav files under  public/assets/audio/
 // Vite serves `public/` at the root, so paths start with `/assets/audio/…`
 
-/** Footstep sample paths per floor type (add more samples for variety) */
+/**
+ * Footstep sample paths per floor type.
+ *
+ * The new outdoor surfaces currently fall back to the existing demo samples:
+ * grass → wood, sand → gravel, water → stone. When you add dedicated files,
+ * replace these URLs with e.g. /assets/audio/footsteps/grass_01.mp3.
+ */
 const FOOTSTEP_SAMPLES: Record<FloorType, string[]> = {
+    grass: [
+        '/assets/audio/footsteps/wood_01.mp3',
+    ],
+    sand: [
+        '/assets/audio/footsteps/gravel_01.mp3',
+    ],
+    water: [
+        '/assets/audio/footsteps/stone_01.mp3',
+    ],
+    stone: [
+        '/assets/audio/footsteps/stone_01.mp3',
+    ],
     wood: [
         '/assets/audio/footsteps/wood_01.mp3',
     ],
     gravel: [
         '/assets/audio/footsteps/gravel_01.mp3',
-    ],
-    stone: [
-        '/assets/audio/footsteps/stone_01.mp3',
     ],
 };
 

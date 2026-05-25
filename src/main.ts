@@ -1,8 +1,7 @@
 /**
  * main.ts — Application entry point for Live Drift Audio Demo.
  *
- * Configures the Phaser 3 game instance with physics, display settings,
- * and registers scenes: StartScene (title) → GameScene (gameplay).
+ * StartScene is first again. It preloads gameplay assets so the map still starts immediately after input.
  */
 import Phaser from 'phaser';
 import { StartScene } from './scenes/StartScene';

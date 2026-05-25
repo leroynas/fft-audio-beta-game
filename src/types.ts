@@ -2,8 +2,14 @@
  * types.ts — Shared type definitions for Live Drift Audio Demo
  */
 
-/** The three floor surface types in the game world */
-export type FloorType = 'wood' | 'gravel' | 'stone';
+/**
+ * Surfaces in the playable world.
+ *
+ * grass/sand/water are the current outdoor-map visuals.
+ * wood/gravel/stone are kept for the existing demo audio mappings and
+ * for older indoor/prototype surfaces.
+ */
+export type FloorType = 'grass' | 'sand' | 'water' | 'stone' | 'wood' | 'gravel';
 
 /** Identifiers for interactive props */
 export type PropType = 'keys' | 'cloth' | 'barrel' | 'door' | 'building' | 'plant';
@@ -24,7 +30,13 @@ export type PlantVariant =
     | 'treble_turnip'
     | 'vinyl_vine';
 
-/** Audio mode identifiers — 'live' is reserved for Phase 3 */
+/** Plant growth stages. Stage 4 is mature/harvestable. */
+export type PlantGrowthStage = 1 | 2 | 3 | 4;
+
+/** Selectable bottom-toolbar tools. */
+export type ToolType = 'pickaxe' | 'axe' | 'hoe' | 'watering_can';
+
+/** Audio mode identifiers */
 export type AudioMode = 'classic' | 'live';
 
 /** A rectangular zone definition for the game world */
@@ -47,4 +59,3 @@ export interface PropConfig {
     buildingVariant?: BuildingVariant;
     targetScene?: EnterableSceneKey;
 }
-

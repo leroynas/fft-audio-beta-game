@@ -40,9 +40,15 @@ const FLOOR_TARGETS: Record<FloorType, {
     wetness: number;
     tightness: number;
 }> = {
+    // Outdoor map surfaces
+    grass:  { weight: 0.35, brightness: 0.55, wetness: 0.20, tightness: 0.70 },
+    sand:   { weight: 0.52, brightness: 0.46, wetness: 0.30, tightness: 0.48 },
+    water:  { weight: 0.65, brightness: 0.36, wetness: 0.78, tightness: 0.38 },
+    stone:  { weight: 0.80, brightness: 0.30, wetness: 0.65, tightness: 0.55 },
+
+    // Legacy/prototype surfaces
     wood:   { weight: 0.35, brightness: 0.55, wetness: 0.20, tightness: 0.70 },
     gravel: { weight: 0.60, brightness: 0.40, wetness: 0.45, tightness: 0.40 },
-    stone:  { weight: 0.80, brightness: 0.30, wetness: 0.65, tightness: 0.55 },
 };
 
 // ── Helper ───────────────────────────────────────────────────
