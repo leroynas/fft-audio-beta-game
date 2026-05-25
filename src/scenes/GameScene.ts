@@ -73,6 +73,7 @@ const PLAYER_START_Y = MAIN_PATH_Y + PATH_W / 2;
 const SHOW_DEBUG_GRID = false;
 
 const DEFAULT_TOOL: ToolType = 'hoe';
+const TOOL_ORDER: ToolType[] = ['pickaxe', 'axe', 'hoe', 'watering_can'];
 const TOOL_HOTKEYS: { keyCode: number; tool: ToolType }[] = [
     { keyCode: Phaser.Input.Keyboard.KeyCodes.ONE,   tool: 'pickaxe' },
     { keyCode: Phaser.Input.Keyboard.KeyCodes.TWO,   tool: 'axe' },
@@ -166,12 +167,12 @@ const EXTRA_PROPS: PropConfig[] = [
 
     // Small planting plot in the grass corridor between the shop and the house.
     // The x-axis alignment is kept, with stone aisles between/around the planters.
-    { x: PLANT_AREA_X - PLANT_COLUMN_SPACING, y: PLANT_ROW_Y1 + PLANT_SPRITE_Y_OFFSET, type: 'plant', label: 'Beat Beet',        plantVariant: 'beat_beet' },
-    { x: PLANT_AREA_X,                        y: PLANT_ROW_Y1 + PLANT_SPRITE_Y_OFFSET, type: 'plant', label: 'Crescendo Carrot', plantVariant: 'crescendo_carrot' },
-    { x: PLANT_AREA_X + PLANT_COLUMN_SPACING, y: PLANT_ROW_Y1 + PLANT_SPRITE_Y_OFFSET, type: 'plant', label: 'Echo Eggplant',    plantVariant: 'echo_eggplant' },
-    { x: PLANT_AREA_X - PLANT_COLUMN_SPACING, y: PLANT_ROW_Y2 + PLANT_SPRITE_Y_OFFSET, type: 'plant', label: 'Melody Melon',     plantVariant: 'melody_melon' },
-    { x: PLANT_AREA_X,                        y: PLANT_ROW_Y2 + PLANT_SPRITE_Y_OFFSET, type: 'plant', label: 'Rhythm Radish',    plantVariant: 'rhythm_radish' },
-    { x: PLANT_AREA_X + PLANT_COLUMN_SPACING, y: PLANT_ROW_Y2 + PLANT_SPRITE_Y_OFFSET, type: 'plant', label: 'Vinyl Vine',       plantVariant: 'vinyl_vine' },
+    { x: PLANT_AREA_X - PLANT_COLUMN_SPACING, y: PLANT_ROW_Y1 + PLANT_SPRITE_Y_OFFSET, type: 'plant', label: 'Empty Planter', plantVariant: 'vinyl_vine' },
+    { x: PLANT_AREA_X,                        y: PLANT_ROW_Y1 + PLANT_SPRITE_Y_OFFSET, type: 'plant', label: 'Empty Planter', plantVariant: 'vinyl_vine' },
+    { x: PLANT_AREA_X + PLANT_COLUMN_SPACING, y: PLANT_ROW_Y1 + PLANT_SPRITE_Y_OFFSET, type: 'plant', label: 'Empty Planter', plantVariant: 'vinyl_vine' },
+    { x: PLANT_AREA_X - PLANT_COLUMN_SPACING, y: PLANT_ROW_Y2 + PLANT_SPRITE_Y_OFFSET, type: 'plant', label: 'Empty Planter', plantVariant: 'vinyl_vine' },
+    { x: PLANT_AREA_X,                        y: PLANT_ROW_Y2 + PLANT_SPRITE_Y_OFFSET, type: 'plant', label: 'Empty Planter', plantVariant: 'vinyl_vine' },
+    { x: PLANT_AREA_X + PLANT_COLUMN_SPACING, y: PLANT_ROW_Y2 + PLANT_SPRITE_Y_OFFSET, type: 'plant', label: 'Empty Planter', plantVariant: 'vinyl_vine' },
 ];
 
 /** Distance (px) the player must walk before the next footstep fires. */
@@ -189,6 +190,7 @@ export class GameScene extends Phaser.Scene {
     private ui!: UI;
     private keyE!: Phaser.Input.Keyboard.Key;
     private keyM!: Phaser.Input.Keyboard.Key;
+    private keyTab!: Phaser.Input.Keyboard.Key;
     private toolKeyBindings: { key: Phaser.Input.Keyboard.Key; tool: ToolType }[] = [];
     private currentTool: ToolType = DEFAULT_TOOL;
     private audioUnlocked = false;
@@ -357,11 +359,33 @@ export class GameScene extends Phaser.Scene {
                 if (prop.type === 'plant') {
                     if (prop.isPlantMature()) {
                         prop.tryHarvest();
-                    } else {
-                        // Tool feedback first, then the current growth-stage tone.
-                        this.audioManager.playToolAction(this.currentTool);
-                        this.audioManager.playPlantGrowthStage(prop.getPlantVariant(), prop.getPlantStage());
+                        return;
                     }
+
+                    if (prop.isPlantEmpty()) {
+                        if (this.currentTool !== 'hoe') {
+                            this.audioManager.playToolAction(this.currentTool);
+                            return;
+                        }
+
+                        prop.tryPlantFirstOwnedSeed();
+                        this.audioManager.playToolAction('hoe');
+                        return;
+                    }
+
+                    if (prop.needsWater()) {
+                        if (this.currentTool !== 'watering_can') {
+                            this.audioManager.playToolAction(this.currentTool);
+                            return;
+                        }
+
+                        prop.tryWater();
+                        this.audioManager.playToolAction('watering_can');
+                        return;
+                    }
+
+                    this.audioManager.playToolAction(this.currentTool);
+                    this.audioManager.playPlantGrowthStage(prop.getPlantVariant(), prop.getPlantStage());
                     return;
                 }
 
@@ -371,15 +395,14 @@ export class GameScene extends Phaser.Scene {
 
         this.ui = new UI(
             this,
-            (tool) => {
-                this.currentTool = tool;
-                this.audioManager.playToolAction(tool);
-            },
+            (tool) => this.selectTool(tool, true),
             (direction) => this.adjustCameraZoom(direction)
         );
 
         this.keyE = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.E);
         this.keyM = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.M);
+        this.keyTab = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.TAB);
+        this.input.keyboard!.addCapture(Phaser.Input.Keyboard.KeyCodes.TAB);
         this.toolKeyBindings = TOOL_HOTKEYS.map((binding) => ({
             key: this.input.keyboard!.addKey(binding.keyCode),
             tool: binding.tool,
@@ -388,6 +411,9 @@ export class GameScene extends Phaser.Scene {
         // Unlock audio without blocking gameplay. The map itself starts instantly.
         this.input.keyboard!.on('keydown', () => this.tryUnlockAudio());
         this.input.on('pointerdown', () => this.tryUnlockAudio());
+        this.input.on('wheel', (_pointer: Phaser.Input.Pointer, _objects: Phaser.GameObjects.GameObject[], _dx: number, dy: number) => {
+            this.cycleTool(dy > 0 ? 1 : -1);
+        });
     }
 
     // ── Update (every frame) ─────────────────────────────────
@@ -430,10 +456,13 @@ export class GameScene extends Phaser.Scene {
             void this.audioManager.switchMode(next);
         }
 
+        if (Phaser.Input.Keyboard.JustDown(this.keyTab)) {
+            this.ui.toggleInventory();
+        }
+
         for (const binding of this.toolKeyBindings) {
             if (Phaser.Input.Keyboard.JustDown(binding.key)) {
-                this.currentTool = binding.tool;
-                this.audioManager.playToolAction(binding.tool);
+                this.selectTool(binding.tool, true);
                 break;
             }
         }
@@ -671,6 +700,19 @@ export class GameScene extends Phaser.Scene {
         gfx.setDepth(50);
     }
 
+
+
+    private selectTool(tool: ToolType, playSound = false): void {
+        if (this.currentTool === tool) return;
+        this.currentTool = tool;
+        if (playSound) this.audioManager.playToolAction(tool);
+    }
+
+    private cycleTool(direction: number): void {
+        const index = TOOL_ORDER.indexOf(this.currentTool);
+        const nextIndex = (index + direction + TOOL_ORDER.length) % TOOL_ORDER.length;
+        this.selectTool(TOOL_ORDER[nextIndex], true);
+    }
 
     private adjustCameraZoom(direction: number): void {
         const nextZoom = Phaser.Math.Clamp(

@@ -1,11 +1,10 @@
 /**
  * gameData.ts — tiny shared state for the farming/shop loop.
  *
- * v13:
- *  - No autosave on purchases/harvests. Refreshing the browser starts a fresh
- *    test run at 50 coins unless the user explicitly presses Save Progress.
- *  - Manual saves use a new key, so old v12 autosaves do not keep polluting the
- *    money state while testing.
+ * v15:
+ *  - Fresh browser sessions start with empty planters and 50 coins unless
+ *    the user explicitly presses Save Progress.
+ *  - Planting consumes one owned seed; crops only start growing after watering.
  */
 import { PlantGrowthStage, PlantVariant } from './types';
 
@@ -22,14 +21,23 @@ export const SEED_CATALOG: SeedDefinition[] = [
     { variant: 'echo_eggplant',    cropName: 'Echo Eggplant',    seedName: 'Echo Eggplant Seeds',    price: 14 },
     { variant: 'melody_melon',     cropName: 'Melody Melon',     seedName: 'Melody Melon Seeds',     price: 18 },
     { variant: 'rhythm_radish',    cropName: 'Rhythm Radish',    seedName: 'Rhythm Radish Seeds',    price: 11 },
+    { variant: 'treble_turnip',    cropName: 'Treble Turnip',    seedName: 'Treble Turnip Seeds',    price: 13 },
     { variant: 'vinyl_vine',       cropName: 'Vinyl Vine',       seedName: 'Vinyl Vine Seeds',       price: 16 },
 ];
 
-const MANUAL_SAVE_KEY = 'fft_stardew_manual_save_v13';
+const MANUAL_SAVE_KEY = 'fft_stardew_manual_save_v16';
 
-interface PlantSessionState {
+export interface PlantSessionState {
+    /** Empty planters have isPlanted=false and no visible crop. */
+    isPlanted?: boolean;
+    /** The actual seed/crop planted in this specific planter. */
+    plantedVariant?: PlantVariant;
+    /** Growth stage for planted crops. Stage 4 is mature/harvestable. */
     stage: PlantGrowthStage;
+    /** Growth timer only advances after the crop has been watered. */
     elapsedMs: number;
+    /** True after the first watering; false crops stay as seeds. */
+    watered?: boolean;
     harvested?: boolean;
 }
 
@@ -113,6 +121,23 @@ class FarmStateStore {
         this.state.harvests[variant] = (this.state.harvests[variant] ?? 0) + amount;
     }
 
+    getFirstOwnedSeedVariant(): PlantVariant | undefined {
+        return SEED_CATALOG.find((entry) => (this.state.seeds[entry.variant] ?? 0) > 0)?.variant;
+    }
+
+    consumeSeed(variant: PlantVariant, amount = 1): boolean {
+        const current = this.state.seeds[variant] ?? 0;
+        if (current < amount) return false;
+        this.state.seeds[variant] = current - amount;
+        return true;
+    }
+
+    consumeFirstOwnedSeed(): PlantVariant | undefined {
+        const variant = this.getFirstOwnedSeedVariant();
+        if (!variant) return undefined;
+        return this.consumeSeed(variant) ? variant : undefined;
+    }
+
     getPlantState(id: string): PlantSessionState | undefined {
         const state = this.state.plants[id];
         return state ? { ...state } : undefined;
@@ -123,8 +148,16 @@ class FarmStateStore {
     }
 
     markPlantHarvested(id: string): void {
-        const current = this.state.plants[id] ?? { stage: 4 as PlantGrowthStage, elapsedMs: 15000 };
-        this.state.plants[id] = { ...current, stage: 4, harvested: true };
+        const current = this.state.plants[id];
+        this.state.plants[id] = {
+            ...current,
+            isPlanted: false,
+            plantedVariant: undefined,
+            stage: 1,
+            elapsedMs: 0,
+            watered: false,
+            harvested: false,
+        };
     }
 
     saveProgress(): void {

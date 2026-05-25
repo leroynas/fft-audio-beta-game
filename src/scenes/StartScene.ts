@@ -72,7 +72,7 @@ export class StartScene extends Phaser.Scene {
         this.cameras.main.setBackgroundColor('#0a0a1a');
 
         // Title
-        this.add.text(cx, cy - 100, 'Supportive Narrative - Sound Demo', {
+        this.add.text(cx, cy - 116, "Daphne's Supportive Narrative Demo", {
             fontSize: '36px',
             color: '#66ff88',
             fontFamily: 'monospace',
@@ -80,18 +80,20 @@ export class StartScene extends Phaser.Scene {
         }).setOrigin(0.5);
 
         // Subtitle
-        this.add.text(cx, cy - 50, 'From Live FOH to Game Audio', {
+        this.add.text(cx, cy - 62, 'Mini-Stardew audio research game · Player character: Daphne', {
             fontSize: '18px',
             color: '#aaaacc',
             fontFamily: 'monospace',
         }).setOrigin(0.5);
 
         // Description
-        this.add.text(cx, cy + 10, [
-            'A research thesis demo comparing:',
+        this.add.text(cx, cy + 18, [
+            'Made for my Supportive Narrative research.',
             '',
-            'Mode A — Classic Random game audio (i.i.d. samples)',
-            'Mode B — Live Drift + Memory (granular, performer-state driven)'
+            'Mode A — chooses a random sample from a prepared list',
+            '          for example: stone_01, stone_02, stone_03.',
+            'Mode B — generates adaptive data from FFT / FluCoMa-style analysis',
+            '          so the sound can respond with more continuity.'
         ].join('\n'), {
             fontSize: '13px',
             color: '#888899',
@@ -101,7 +103,7 @@ export class StartScene extends Phaser.Scene {
         }).setOrigin(0.5);
 
         // Prompt — pulsing
-        const prompt = this.add.text(cx, cy + 160, 'Press SPACE / ENTER or click to start', {
+        const prompt = this.add.text(cx, cy + 170, 'Press SPACE / ENTER or click to start', {
             fontSize: '20px',
             color: '#ffffff',
             fontFamily: 'monospace',

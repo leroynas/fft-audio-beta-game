@@ -6,22 +6,22 @@
  *  - Spectrum sits in the upper-right, with the FFT Mix panel directly below.
  *  - Money/gold sits in the lower-left.
  *  - Toolbar is smaller and uses generated pixel-tool icons, including a clear hoe icon.
- *  - HUD counter-scales against camera zoom so it stays locked to the screen.
+ *  - HUD is projected into world space from screen pixels, so it stays locked to the canvas while the world camera zooms.
  *  - Adds a manual Save Progress button; refresh resets unsaved money/state.
  */
 import Phaser from 'phaser';
 import { AudioMode, FloorType, ToolType } from '../types';
 import { MixerSnapshot } from '../audio/AdaptiveMixer';
-import { FarmState } from '../gameData';
+import { FarmState, SEED_CATALOG } from '../gameData';
 
 const MODE_LABELS: Record<AudioMode, string> = {
-    classic: 'Mode A · Classic Random',
-    live: 'Mode B · Live Drift',
+    classic: 'Mode A · Random Samples',
+    live: 'Mode B · FFT/FluCoMa Data',
 };
 
 const MODE_DESCRIPTIONS: Record<AudioMode, string> = {
-    classic: 'WASD move · E interact/use · M mode · 1–4 tools · click SAVE to keep progress',
-    live: 'WASD move · E interact/use · M mode · 1–4 tools · stable memory/drift layer',
+    classic: 'WASD move · E interact · M switch mode · TAB inventory · SAVE keeps progress',
+    live: 'WASD move · E interact · M switch mode · TAB inventory · generated from FFT/FluCoMa-style data',
 };
 
 const MODE_COLORS: Record<AudioMode, string> = {
@@ -45,7 +45,7 @@ const MIX_PANEL_W = SPEC_PANEL_W;
 const MIX_PANEL_H = 86;
 const MIX_GAP = 8;
 
-const TOOL_BOX_W = 82;
+const TOOL_BOX_W = 76;
 const TOOL_BOX_H = 42;
 const TOOL_GAP = 6;
 const TOOLBAR_BOTTOM_MARGIN = 12;
@@ -54,6 +54,11 @@ const ZOOM_BOX_H = 32;
 const ZOOM_GAP = 6;
 const SAVE_BOX_W = 64;
 const SAVE_BOX_H = 26;
+
+const INVENTORY_W = 560;
+const INVENTORY_H = 392;
+const INVENTORY_SLOT = 54;
+const INVENTORY_PAD = 18;
 
 const DB_FLOOR = -60;
 const DB_CEIL = 0;
@@ -64,11 +69,11 @@ const BAR_COLORS = {
     high: 0xe776b6,
 };
 
-const TOOLS: { key: ToolType; hotkey: string; label: string }[] = [
-    { key: 'pickaxe', hotkey: '1', label: 'Pick' },
-    { key: 'axe', hotkey: '2', label: 'Axe' },
-    { key: 'hoe', hotkey: '3', label: 'Hoe' },
-    { key: 'watering_can', hotkey: '4', label: 'Water' },
+const TOOLS: { key: ToolType; label: string }[] = [
+    { key: 'pickaxe', label: 'Pick' },
+    { key: 'axe', label: 'Axe' },
+    { key: 'hoe', label: 'Hoe' },
+    { key: 'watering_can', label: 'Water' },
 ];
 
 function dbToNorm(db: number): number {
@@ -89,6 +94,7 @@ export class UI {
     private mixGfx: Phaser.GameObjects.Graphics;
     private toolPanel: Phaser.GameObjects.Graphics;
     private zoomPanel: Phaser.GameObjects.Graphics;
+    private inventoryGfx: Phaser.GameObjects.Graphics;
 
     private modeText: Phaser.GameObjects.Text;
     private modeDescText: Phaser.GameObjects.Text;
@@ -108,14 +114,14 @@ export class UI {
     private toolZones: Phaser.GameObjects.Zone[] = [];
     private zoomTexts: Phaser.GameObjects.Text[] = [];
     private zoomZones: Phaser.GameObjects.Zone[] = [];
+    private inventoryObjects: Phaser.GameObjects.GameObject[] = [];
+    private inventoryOpen = false;
+    private hudCamera?: Phaser.Cameras.Scene2D.Camera;
 
     private activeTool: ToolType = 'hoe';
     private onToolSelect?: (tool: ToolType) => void;
     private onZoom?: (direction: number) => void;
     private resizeHandler?: () => void;
-    private overlaySyncHandler?: () => void;
-    private uiCamera?: Phaser.Cameras.Scene2D.Camera;
-    private uiObjects: Phaser.GameObjects.GameObject[] = [];
     private destroyed = false;
     private hudScale = 1;
     private saveStatusUntil = 0;
@@ -131,6 +137,7 @@ export class UI {
         this.mixGfx = scene.add.graphics().setScrollFactor(0).setDepth(100);
         this.toolPanel = scene.add.graphics().setScrollFactor(0).setDepth(101);
         this.zoomPanel = scene.add.graphics().setScrollFactor(0).setDepth(101);
+        this.inventoryGfx = scene.add.graphics().setScrollFactor(0).setDepth(140);
 
         const baseText: Phaser.Types.GameObjects.Text.TextStyle = {
             fontFamily: 'monospace',
@@ -238,17 +245,14 @@ export class UI {
 
         this.createToolbar();
         this.createZoomButtons();
-        this.registerOverlayObjects();
-        this.createOverlayCamera();
         this.reposition(scene);
+        this.syncHudCamera();
 
         this.resizeHandler = () => {
             if (this.destroyed || !this.scene.sys.isActive()) return;
             this.reposition(scene);
         };
         scene.scale.on('resize', this.resizeHandler);
-        this.overlaySyncHandler = () => this.syncOverlayCamera();
-        scene.events.on(Phaser.Scenes.Events.POST_UPDATE, this.overlaySyncHandler);
         scene.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.destroy());
         scene.events.once(Phaser.Scenes.Events.DESTROY, () => this.destroy());
     }
@@ -259,14 +263,6 @@ export class UI {
         if (this.resizeHandler) {
             this.scene.scale.off('resize', this.resizeHandler);
             this.resizeHandler = undefined;
-        }
-        if (this.overlaySyncHandler) {
-            this.scene.events.off(Phaser.Scenes.Events.POST_UPDATE, this.overlaySyncHandler);
-            this.overlaySyncHandler = undefined;
-        }
-        if (this.uiCamera && this.scene.cameras.cameras.includes(this.uiCamera)) {
-            this.scene.cameras.remove(this.uiCamera);
-            this.uiCamera = undefined;
         }
     }
 
@@ -287,6 +283,8 @@ export class UI {
         this.floorText.setText(`Floor: ${floor.toUpperCase()}`);
         this.seedText.setText(seed ? `Seed: ${seed} · locked` : 'Seed: locked');
         this.setActiveTool(tool);
+        this.redrawInventory();
+        this.syncHudCamera();
 
         if (mixer) {
             this.drawSpectrogram(mixer);
@@ -298,79 +296,65 @@ export class UI {
         }
     }
 
+    toggleInventory(): void {
+        this.inventoryOpen = !this.inventoryOpen;
+        this.redrawInventory();
+        this.syncHudCamera();
+    }
+
+    isInventoryOpen(): boolean {
+        return this.inventoryOpen;
+    }
+
     setActiveTool(tool: ToolType): void {
         if (this.destroyed || this.activeTool === tool) return;
         this.activeTool = tool;
         this.redrawToolbar();
     }
 
-    private sx(x: number): number { return x; }
-    private sy(y: number): number { return y; }
-
-
-    private registerOverlayObjects(): void {
-        this.uiObjects = [
-            this.hudGfx,
-            this.specGfx,
-            this.mixGfx,
-            this.toolPanel,
-            this.zoomPanel,
-            this.modeText,
-            this.modeDescText,
-            this.floorText,
-            this.seedText,
-            this.moneyText,
-            this.saveText,
-            this.saveStatusText,
-            this.saveZone,
-            this.specTitleText,
-            this.mixTitleText,
-            this.mixerStatusText,
-            ...this.mixValueTexts,
-            ...this.toolTexts,
-            ...this.toolIcons,
-            ...this.toolZones,
-            ...this.zoomTexts,
-            ...this.zoomZones,
-        ];
+    private sx(x: number): number {
+        return x;
     }
 
-    private createOverlayCamera(): void {
-        const cam = this.scene.cameras.add(0, 0, this.scene.scale.width, this.scene.scale.height);
-        cam.setName('HUDOverlayCamera');
-        cam.setScroll(0, 0);
-        cam.setZoom(1);
-        cam.setRoundPixels(true);
-        this.uiCamera = cam;
-
-        this.scene.cameras.main.ignore(this.uiObjects);
-        this.syncOverlayCamera();
+    private sy(y: number): number {
+        return y;
     }
 
-    private syncOverlayCamera(): void {
-        if (this.destroyed || !this.uiCamera) return;
-        this.uiCamera.setViewport(0, 0, this.scene.scale.width, this.scene.scale.height);
-        this.uiCamera.setScroll(0, 0);
-        this.uiCamera.setZoom(1);
-
-        const uiSet = new Set(this.uiObjects);
-        const nonUiObjects = this.scene.children.getChildren().filter((obj) => !uiSet.has(obj));
-        this.uiCamera.ignore(nonUiObjects);
-        this.scene.cameras.main.ignore(this.uiObjects);
-    }
 
     private refreshHudScale(): void {
-        // A separate HUD camera renders the overlay at screen-space zoom 1.
-        // Therefore the UI itself should never counter-scale against the world
-        // camera. Zoom buttons only zoom the world/character camera.
+        // v16: HUD lives in its own overlay camera. Coordinates are true screen
+        // pixels, not projected world coordinates, so zoom buttons and the rest
+        // of the UI remain locked to the canvas during camera zoom.
         this.hudScale = 1;
 
-        const scalable: Phaser.GameObjects.GameObject[] = [
+        const graphics = [this.hudGfx, this.specGfx, this.mixGfx, this.toolPanel, this.zoomPanel, this.inventoryGfx];
+        for (const gfx of graphics) {
+            if (!gfx.scene) continue;
+            gfx.setPosition(0, 0);
+            gfx.setScale(1);
+            gfx.setScrollFactor(0);
+        }
+
+        for (const obj of this.getHudObjects()) {
+            const scalableObj = obj as Phaser.GameObjects.GameObject & {
+                scene?: Phaser.Scene;
+                setScale?: (x: number, y?: number) => void;
+                setScrollFactor?: (x: number, y?: number) => void;
+            };
+            if (scalableObj.scene && scalableObj.setScale) scalableObj.setScale(1);
+            if (scalableObj.scene && scalableObj.setScrollFactor) scalableObj.setScrollFactor(0);
+        }
+        this.syncHudCamera();
+    }
+
+    private getHudObjects(): Phaser.GameObjects.GameObject[] {
+        return [
             this.hudGfx,
             this.specGfx,
             this.mixGfx,
             this.toolPanel,
             this.zoomPanel,
+            this.inventoryGfx,
             this.modeText,
             this.modeDescText,
             this.floorText,
@@ -388,12 +372,28 @@ export class UI {
             ...this.toolZones,
             ...this.zoomTexts,
             ...this.zoomZones,
-        ];
+            ...this.inventoryObjects,
+        ].filter((obj) => !!(obj as Phaser.GameObjects.GameObject & { scene?: Phaser.Scene }).scene);
+    }
 
-        for (const obj of scalable) {
-            const scalableObj = obj as Phaser.GameObjects.GameObject & { scene?: Phaser.Scene; setScale?: (x: number, y?: number) => void };
-            if (scalableObj.scene && scalableObj.setScale) scalableObj.setScale(this.hudScale);
+    private syncHudCamera(): void {
+        if (this.destroyed || !this.scene.sys.isActive()) return;
+        const width = this.scene.scale.width;
+        const height = this.scene.scale.height;
+        if (!this.hudCamera || !this.scene.cameras.cameras.includes(this.hudCamera)) {
+            this.hudCamera = this.scene.cameras.add(0, 0, width, height, false, 'HUDOverlayCamera');
+            this.hudCamera.setScroll(0, 0);
+            this.hudCamera.setZoom(1);
+        } else {
+            this.hudCamera.setViewport(0, 0, width, height);
+            this.hudCamera.setScroll(0, 0);
+            this.hudCamera.setZoom(1);
         }
+
+        const hudObjects = this.getHudObjects();
+        this.scene.cameras.main.ignore(hudObjects);
+        const worldObjects = this.scene.children.list.filter((obj: Phaser.GameObjects.GameObject) => !hudObjects.includes(obj));
+        this.hudCamera.ignore(worldObjects);
     }
 
     private redrawHudChrome(mode: AudioMode): void {
@@ -520,7 +520,7 @@ export class UI {
                 .setOrigin(0.5)
                 .setScrollFactor(0)
                 .setDepth(102);
-            const text = this.scene.add.text(0, 0, `${tool.hotkey} ${tool.label}`, style)
+            const text = this.scene.add.text(0, 0, tool.label, style)
                 .setOrigin(0.5)
                 .setScrollFactor(0)
                 .setDepth(102);
@@ -563,6 +563,111 @@ export class UI {
         });
     }
 
+    private redrawInventory(): void {
+        if (this.destroyed || !this.inventoryGfx.scene) return;
+        if (!this.inventoryOpen) {
+            this.inventoryGfx.clear();
+            this.clearInventoryObjects();
+            return;
+        }
+
+        this.inventoryGfx.clear();
+        this.clearInventoryObjects();
+
+        const w = this.scene.scale.width;
+        const h = this.scene.scale.height;
+        const x = Math.round((w - INVENTORY_W) / 2);
+        const y = Math.round((h - INVENTORY_H) / 2);
+
+        this.inventoryGfx.fillStyle(0x000000, 0.42);
+        this.inventoryGfx.fillRoundedRect(x + 8, y + 8, INVENTORY_W, INVENTORY_H, 16);
+        this.inventoryGfx.fillStyle(0x754522, 0.98);
+        this.inventoryGfx.fillRoundedRect(x, y, INVENTORY_W, INVENTORY_H, 16);
+        this.inventoryGfx.lineStyle(6, 0x2a1208, 1);
+        this.inventoryGfx.strokeRoundedRect(x, y, INVENTORY_W, INVENTORY_H, 16);
+        this.inventoryGfx.lineStyle(2, 0xffde8f, 0.86);
+        this.inventoryGfx.strokeRoundedRect(x + 12, y + 12, INVENTORY_W - 24, INVENTORY_H - 24, 12);
+        this.inventoryGfx.fillStyle(0xf7ddb0, 0.96);
+        this.inventoryGfx.fillRoundedRect(x + INVENTORY_PAD, y + 62, INVENTORY_W - INVENTORY_PAD * 2, INVENTORY_H - 82, 10);
+
+        this.addInventoryText(x + INVENTORY_W / 2, y + 31, 'Inventory', 22, '#fff1a8', true).setOrigin(0.5);
+        this.addInventoryText(x + INVENTORY_W - 30, y + 31, 'TAB', 11, '#ffde8f', true).setOrigin(1, 0.5);
+
+        this.addInventoryText(x + 34, y + 78, 'Tools', 13, '#2b1609', true);
+        const toolY = y + 124;
+        TOOLS.forEach((tool, index) => {
+            const slotX = x + 42 + index * 70;
+            this.drawInventorySlot(slotX, toolY, INVENTORY_SLOT, INVENTORY_SLOT, tool.key === this.activeTool);
+            const icon = this.scene.add.image(slotX, toolY - 5, `tool-icon-${tool.key}`)
+                .setOrigin(0.5)
+                .setScale(1.05)
+                .setDepth(144)
+                .setScrollFactor(0);
+            this.inventoryObjects.push(icon);
+            this.addInventoryText(slotX, toolY + 22, tool.label, 9, '#2b1609', true).setOrigin(0.5);
+        });
+
+        this.addInventoryText(x + 34, y + 184, 'Seeds', 13, '#2b1609', true);
+        this.addInventoryText(x + 318, y + 184, 'Harvested plants', 13, '#2b1609', true);
+
+        SEED_CATALOG.forEach((item, index) => {
+            const row = index % 3;
+            const col = Math.floor(index / 3);
+            const sx = x + 48 + col * 132;
+            const sy = y + 230 + row * 45;
+            this.drawInventorySlot(sx, sy, 36, 36, false);
+            const seedIcon = this.scene.add.image(sx, sy + 8, `${item.variant}_stage2`)
+                .setOrigin(0.5, 1)
+                .setDepth(144)
+                .setScrollFactor(0);
+            seedIcon.setScale(Math.min(30 / Math.max(1, seedIcon.width), 30 / Math.max(1, seedIcon.height), 0.075));
+            this.inventoryObjects.push(seedIcon);
+            this.addInventoryText(sx + 24, sy - 12, `${item.seedName.replace(' Seeds', '')}`, 8, '#2b1609', true);
+            this.addInventoryText(sx + 24, sy + 3, `seeds × ${FarmState.getSeedCount(item.variant)}`, 8, '#5a341b', false);
+
+            const hx = x + 332 + col * 96;
+            const hy = sy;
+            this.drawInventorySlot(hx, hy, 36, 36, false);
+            const cropIcon = this.scene.add.image(hx, hy + 9, `${item.variant}_stage4`)
+                .setOrigin(0.5, 1)
+                .setDepth(144)
+                .setScrollFactor(0);
+            cropIcon.setScale(Math.min(30 / Math.max(1, cropIcon.width), 30 / Math.max(1, cropIcon.height), 0.075));
+            this.inventoryObjects.push(cropIcon);
+            this.addInventoryText(hx + 24, hy - 12, item.cropName, 8, '#2b1609', true);
+            this.addInventoryText(hx + 24, hy + 3, `plants × ${FarmState.getHarvestCount(item.variant)}`, 8, '#5a341b', false);
+        });
+
+        this.syncHudCamera();
+    }
+
+    private drawInventorySlot(x: number, y: number, width: number, height: number, selected: boolean): void {
+        this.inventoryGfx.fillStyle(selected ? 0x8d5a2d : 0xe8c482, selected ? 0.98 : 0.95);
+        this.inventoryGfx.fillRoundedRect(x - width / 2, y - height / 2, width, height, 8);
+        this.inventoryGfx.lineStyle(selected ? 3 : 2, selected ? 0xffde8f : 0x7b4a25, selected ? 1 : 0.85);
+        this.inventoryGfx.strokeRoundedRect(x - width / 2 + 2, y - height / 2 + 2, width - 4, height - 4, 7);
+    }
+
+    private addInventoryText(x: number, y: number, text: string, size: number, color: string, bold = false): Phaser.GameObjects.Text {
+        const obj = this.scene.add.text(x, y, text, {
+            fontSize: `${size}px`,
+            color,
+            fontFamily: 'monospace',
+            fontStyle: bold ? 'bold' : 'normal',
+            stroke: color === '#2b1609' || color === '#5a341b' ? undefined : '#2a1208',
+            strokeThickness: color === '#2b1609' || color === '#5a341b' ? 0 : 2,
+        }).setDepth(145).setScrollFactor(0);
+        this.inventoryObjects.push(obj);
+        return obj;
+    }
+
+    private clearInventoryObjects(): void {
+        for (const obj of this.inventoryObjects) {
+            if ((obj as Phaser.GameObjects.GameObject & { scene?: Phaser.Scene }).scene) obj.destroy();
+        }
+        this.inventoryObjects = [];
+    }
+
     private reposition(scene: Phaser.Scene): void {
         if (this.destroyed || !this.modeText.scene) return;
         this.refreshHudScale();
@@ -587,6 +692,7 @@ export class UI {
 
         this.repositionToolbar(scene);
         this.repositionZoomButtons(scene);
+        this.syncHudCamera();
     }
 
     private repositionToolbar(scene: Phaser.Scene): void {

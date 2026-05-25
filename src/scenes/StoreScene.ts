@@ -12,11 +12,15 @@ import Phaser from 'phaser';
 import { Player } from '../entities/Player';
 import { FarmState, SEED_CATALOG, SeedDefinition } from '../gameData';
 import { FloorZone, PlantVariant } from '../types';
-import { extensionCandidates, loadFirstAvailableImageTexture } from '../utils/TextureResolver';
+import {
+    extensionCandidates,
+    loadFirstAvailableImageTexture,
+    loadFirstAvailableSpriteSheetTexture,
+} from '../utils/TextureResolver';
 
 const PANEL_W = 790;
-const PANEL_H = 486;
-const ROW_H = 58;
+const PANEL_H = 520;
+const ROW_H = 50;
 const TILE = 42;
 
 const FLOOR_TOP = 255;
@@ -40,6 +44,16 @@ const SHOP_PLANT_ASSETS: Record<PlantVariant, { folder: string; filePrefix: stri
     treble_turnip: { folder: 'Treble_Turnip', filePrefix: 'TrebleTurnip' },
     vinyl_vine: { folder: 'Vinyl_Vine', filePrefix: 'VinylVine' },
 };
+
+
+type NpcId = 'leroy' | 'lindsay' | 'bram' | 'ming';
+const NPC_SPRITESHEETS: Record<NpcId, { key: string; base: string; displayName: string }> = {
+    leroy: { key: 'npc-leroy', base: '/assets/sprites/leroy_spritesheet', displayName: 'Leroy' },
+    lindsay: { key: 'npc-lindsay', base: '/assets/sprites/lindsay_spritesheet', displayName: 'Lindsay' },
+    bram: { key: 'npc-bram', base: '/assets/sprites/bram_spritesheet', displayName: 'Bram' },
+    ming: { key: 'npc-ming', base: '/assets/sprites/ming_spritesheet', displayName: 'Ming' },
+};
+const NPC_SPRITESHEET_CONFIG = { frameWidth: 32, frameHeight: 32 };
 
 type ReturnSpawn = { x: number; y: number };
 
@@ -122,20 +136,10 @@ export class StoreScene extends Phaser.Scene {
 
         const nearCounter = this.isPlayerInside(this.counterInteractZone);
         const nearExit = this.isPlayerInside(this.exitZone);
-        if (nearCounter) {
-            this.promptText.setText('[E] Talk / buy seeds');
-            this.promptText.setPosition(this.scale.width / 2, 314);
-            this.promptText.setAlpha(1);
-        } else if (nearExit) {
-            this.promptText.setText('Leaving store…');
-            this.promptText.setPosition(this.exitZone.centerX, this.exitZone.y - 24);
-            this.promptText.setAlpha(1);
+        this.promptText.setAlpha(0).setVisible(false);
+        if (nearExit) {
             this.exitToVillage();
             return;
-        } else {
-            this.promptText.setAlpha(0.35);
-            this.promptText.setText('Counter: E buys seeds');
-            this.promptText.setPosition(this.scale.width / 2, 314);
         }
 
         if (Phaser.Input.Keyboard.JustDown(this.keyEsc)) {
@@ -222,38 +226,29 @@ export class StoreScene extends Phaser.Scene {
 
     private drawCounterNpc(): void {
         const cx = this.scale.width / 2;
-        const counterY = 242;
+        const counterY = 286;
 
-        this.add.rectangle(cx, counterY, 580, 76, 0x7b4a25, 1)
+        // Leroy stands behind a lower counter: grounded on the shop floor,
+        // with his head/shoulders visible above the front plank.
+        const npcX = cx - 190;
+        this.drawNpcAt('leroy', npcX, counterY + 36);
+
+        this.add.rectangle(cx, counterY, 580, 86, 0x7b4a25, 1)
             .setStrokeStyle(4, 0x2c1509, 1)
-            .setDepth(20);
-        this.add.rectangle(cx, counterY - 30, 600, 18, 0xc28745, 1)
+            .setDepth(22);
+        this.add.rectangle(cx, counterY - 42, 600, 18, 0xc28745, 1)
             .setStrokeStyle(2, 0xf1bf6d, 0.7)
-            .setDepth(21);
-        this.add.rectangle(cx, counterY + 12, 540, 5, 0x4a2814, 0.65).setDepth(22);
+            .setDepth(23);
+        this.add.rectangle(cx, counterY + 14, 540, 5, 0x4a2814, 0.65).setDepth(24);
 
-        this.counterCollider = this.add.rectangle(cx, counterY + 5, 600, 88, 0xff0000, 0)
+        this.counterCollider = this.add.rectangle(cx, counterY + 6, 600, 92, 0xff0000, 0)
             .setDepth(21);
         this.physics.add.existing(this.counterCollider, true);
 
-        this.counterInteractZone = new Phaser.Geom.Rectangle(cx - 320, counterY + 40, 640, 100);
+        this.counterInteractZone = new Phaser.Geom.Rectangle(cx - 320, counterY + 40, 640, 116);
 
-        const npcX = cx - 190;
-        this.add.circle(npcX, counterY - 76, 18, 0xffcf92, 1).setDepth(25);
-        this.add.rectangle(npcX, counterY - 42, 36, 46, 0x4f7fd8, 1)
-            .setStrokeStyle(2, 0x1a2a4a, 0.9)
-            .setDepth(24);
-        this.add.rectangle(npcX, counterY - 93, 42, 10, 0x2c1b10, 1).setDepth(26);
-        this.add.text(npcX, counterY - 122, 'Shopkeeper', {
-            fontSize: '11px',
-            color: '#ffffff',
-            fontFamily: 'monospace',
-            stroke: '#000000',
-            strokeThickness: 3,
-        }).setOrigin(0.5).setDepth(50);
-
-        this.dialogueText = this.add.text(cx, counterY + 82,
-            'Shopkeeper: Welcome. Press E at the counter to buy seeds.',
+        this.dialogueText = this.add.text(cx, counterY + 78,
+            'Leroy: Welcome to the seed shop.',
             {
                 fontSize: '15px',
                 color: '#2b1609',
@@ -265,13 +260,69 @@ export class StoreScene extends Phaser.Scene {
             }
         ).setOrigin(0.5).setDepth(80);
 
-        this.promptText = this.add.text(cx, counterY + 120, 'Counter: E buys seeds', {
+        this.promptText = this.add.text(cx, counterY + 118, '', {
             fontSize: '13px',
             color: '#ffee77',
             fontFamily: 'monospace',
             stroke: '#000000',
             strokeThickness: 3,
-        }).setOrigin(0.5).setAlpha(0.35).setDepth(90);
+        }).setOrigin(0.5).setAlpha(0).setVisible(false).setDepth(90);
+    }
+
+
+    private drawNpcAt(npcId: NpcId, x: number, groundY: number): void {
+        const cfg = NPC_SPRITESHEETS[npcId];
+        const fallbackHead = this.add.circle(x, groundY - 58, 18, 0xffcf92, 1).setDepth(18);
+        const fallbackBody = this.add.rectangle(x, groundY - 22, 36, 52, 0x4f7fd8, 1)
+            .setStrokeStyle(2, 0x1a2a4a, 0.9)
+            .setDepth(17);
+        const fallbackHair = this.add.rectangle(x, groundY - 75, 42, 10, 0x2c1b10, 1).setDepth(19);
+        const fallbackParts: Phaser.GameObjects.GameObject[] = [fallbackHead, fallbackBody, fallbackHair];
+
+        this.tweens.add({
+            targets: [fallbackHead, fallbackHair],
+            x: x + 2,
+            duration: 520,
+            yoyo: true,
+            repeat: -1,
+            repeatDelay: 3600,
+            ease: 'Sine.easeInOut',
+        });
+
+        loadFirstAvailableSpriteSheetTexture(
+            this,
+            cfg.key,
+            extensionCandidates(cfg.base),
+            NPC_SPRITESHEET_CONFIG,
+            (textureKey) => {
+                if (!this.sys.isActive()) return;
+                for (const part of fallbackParts) part.destroy();
+
+                const npc = this.add.sprite(x, groundY, textureKey, 0)
+                    .setOrigin(0.5, 1)
+                    .setScale(2.1)
+                    .setDepth(18);
+
+                // Very subtle idle: Leroy mostly chills behind the counter and
+                // occasionally shifts his head. Works with the same 32x32 sheet
+                // structure as the player; if frame 1 is not a head move, replace
+                // the sheet later without changing code.
+                if (this.textures.get(textureKey).frameTotal > 1) {
+                    const animKey = `${textureKey}-counter-idle`;
+                    if (!this.anims.exists(animKey)) {
+                        this.anims.create({
+                            key: animKey,
+                            frames: this.anims.generateFrameNumbers(textureKey, { start: 0, end: 1 }),
+                            frameRate: 0.7,
+                            repeat: -1,
+                            yoyo: true,
+                            repeatDelay: 3200,
+                        });
+                    }
+                    npc.play(animKey);
+                }
+            }
+        );
     }
 
     private createPlayer(): void {
@@ -294,6 +345,7 @@ export class StoreScene extends Phaser.Scene {
             Phaser.Input.Keyboard.KeyCodes.FOUR,
             Phaser.Input.Keyboard.KeyCodes.FIVE,
             Phaser.Input.Keyboard.KeyCodes.SIX,
+            Phaser.Input.Keyboard.KeyCodes.SEVEN,
         ].map((keyCode) => this.input.keyboard!.addKey(keyCode));
     }
 
@@ -312,7 +364,7 @@ export class StoreScene extends Phaser.Scene {
         if (this.shopOpen) return;
         this.shopOpen = true;
         this.stopPlayerBody();
-        this.dialogueText.setText('Shopkeeper: Choose a seedling bag. Press 1–6 or click a slot to buy one.');
+        this.dialogueText.setText('Leroy: Choose a seedling bag from the catalog.');
         this.drawShopPanel();
     }
 
@@ -321,7 +373,7 @@ export class StoreScene extends Phaser.Scene {
         this.shopOpen = false;
         this.shopContainer?.destroy(true);
         this.shopContainer = undefined;
-        this.dialogueText.setText('Shopkeeper: Come back when you need more seeds.');
+        this.dialogueText.setText('Leroy: Come back when you need more seeds.');
     }
 
     private drawShopPanel(): void {
@@ -387,7 +439,7 @@ export class StoreScene extends Phaser.Scene {
 
             const textColor = canAfford ? '#2b1609' : '#614b36';
             const owned = FarmState.getSeedCount(item.variant);
-            children.push(this.add.text(-PANEL_W / 2 + 122, y - 17, `[${index + 1}] ${item.seedName}`, {
+            children.push(this.add.text(-PANEL_W / 2 + 122, y - 17, item.seedName, {
                 fontSize: '14px',
                 color: textColor,
                 fontFamily: 'monospace',
@@ -411,7 +463,7 @@ export class StoreScene extends Phaser.Scene {
             }).setOrigin(1, 0));
         });
 
-        children.push(this.add.text(0, PANEL_H / 2 - 26, 'Click/press 1–6 to buy.  E or ESC closes catalog.', {
+        children.push(this.add.text(0, PANEL_H / 2 - 26, 'Click a seedling bag to buy.  E or ESC closes catalog.', {
             fontSize: '13px',
             color: '#fff1a8',
             fontFamily: 'monospace',
@@ -424,7 +476,7 @@ export class StoreScene extends Phaser.Scene {
 
     private buySeed(item: SeedDefinition): void {
         const result = FarmState.buySeed(item.variant, 1);
-        this.dialogueText.setText(`Shopkeeper: ${result.message}`);
+        this.dialogueText.setText(`Leroy: ${result.message}`);
         this.refreshHud();
         if (this.shopOpen) this.drawShopPanel();
     }
