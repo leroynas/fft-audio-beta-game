@@ -80,7 +80,7 @@ export class StartScene extends Phaser.Scene {
         }).setOrigin(0.5);
 
         // Subtitle
-        this.add.text(cx, cy - 62, 'Mini farming game for research on randomisation in game sound · Player: Daphne', {
+        this.add.text(cx, cy - 62, 'Mini farm game for research on randomisation in game sound· You play as me: Daphne. :)', {
             fontSize: '18px',
             color: '#aaaacc',
             fontFamily: 'monospace',
@@ -88,12 +88,13 @@ export class StartScene extends Phaser.Scene {
 
         // Description
         this.add.text(cx, cy + 18, [
-            'Made for my Supportive Narrative research.',
+            'This game is being developed for my Supportive Narrative research.',
             '',
             'Mode A — chooses a random sample from a prepared list',
             '          for example: stone_01, stone_02, stone_03.',
             'Mode B — uses adaptive continuity and memory',
-            '          so variation follows the performer over time.'
+            '          so variation follows the performer.',
+            'have fun!'
         ].join('\n'), {
             fontSize: '13px',
             color: '#888899',
