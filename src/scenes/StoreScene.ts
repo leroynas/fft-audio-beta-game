@@ -59,10 +59,10 @@ const SHOP_PLANT_ASSETS: Record<PlantVariant, { folder: string; filePrefix: stri
 
 type NpcId = 'leroy' | 'lindsay' | 'bram' | 'ming';
 const NPC_SPRITESHEETS: Record<NpcId, { key: string; base: string; displayName: string }> = {
-    leroy: { key: 'npc-leroy', base: '/assets/sprites/leroy_spritesheet', displayName: 'Leroy' },
-    lindsay: { key: 'npc-lindsay', base: '/assets/sprites/lindsay_spritesheet', displayName: 'Lindsay' },
-    bram: { key: 'npc-bram', base: '/assets/sprites/bram_spritesheet', displayName: 'Bram' },
-    ming: { key: 'npc-ming', base: '/assets/sprites/ming_spritesheet', displayName: 'Ming' },
+    leroy: { key: 'npc-leroy', base: '/assets/sprites/characters/leroy_spritesheet', displayName: 'Leroy' },
+    lindsay: { key: 'npc-lindsay', base: '/assets/sprites/characters/lindsay_spritesheet', displayName: 'Lindsay' },
+    bram: { key: 'npc-bram', base: '/assets/sprites/characters/bram_spritesheet', displayName: 'Bram' },
+    ming: { key: 'npc-ming', base: '/assets/sprites/characters/ming_spritesheet', displayName: 'Ming' },
 };
 const NPC_SPRITESHEET_CONFIG = { frameWidth: 32, frameHeight: 32 };
 
@@ -107,7 +107,7 @@ export class StoreScene extends Phaser.Scene {
         for (const [variant, asset] of Object.entries(SHOP_PLANT_ASSETS) as [PlantVariant, { folder: string; filePrefix: string }][]) {
             this.load.image(
                 `shop-seedling-${variant}`,
-                `/assets/sprites/Plants/plants/${asset.folder}/${asset.filePrefix}_02_Sprout.png`
+                `/assets/sprites/plants/${asset.folder}/${asset.filePrefix}_02_Sprout.png`
             );
         }
     }

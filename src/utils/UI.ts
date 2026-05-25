@@ -22,15 +22,16 @@ const MODE_DESCRIPTIONS: Record<AudioMode, string> = {
 };
 
 const MODE_COLORS: Record<AudioMode, string> = {
-    classic: '#ff927f',
-    live: '#9df8a6',
+    classic: '#be4622',
+    live: '#1c8db9',
 };
 
+// 🗡🏹🔨💧
 const TOOLS: { key: ToolType; label: string; icon: string }[] = [
     { key: 'pickaxe', label: 'Pickaxe', icon: '⛏' },
     { key: 'axe', label: 'Axe', icon: '🪓' },
-    { key: 'hoe', label: 'Hoe', icon: '⌐' },
-    { key: 'watering_can', label: 'Water', icon: '💧' },
+    { key: 'hoe', label: 'Hoe', icon: '🪏' },
+    { key: 'watering_can', label: 'Water', icon: '🚿' },
 ];
 
 const PLANT_ASSETS: Record<PlantVariant, { folder: string; filePrefix: string }> = {
