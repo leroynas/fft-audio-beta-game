@@ -1,12 +1,13 @@
 /**
  * main.ts — Application entry point for Live Drift Audio Demo.
  *
- * Configures the Phaser 3 game instance with physics, display settings,
- * and registers scenes: StartScene (title) → GameScene (gameplay).
+ * StartScene is first again. It preloads gameplay assets so the map still starts immediately after input.
  */
 import Phaser from 'phaser';
 import { StartScene } from './scenes/StartScene';
 import { GameScene } from './scenes/GameScene';
+import { HouseScene } from './scenes/HouseScene';
+import { StoreScene } from './scenes/StoreScene';
 
 const config: Phaser.Types.Core.GameConfig = {
     type: Phaser.AUTO,
@@ -21,7 +22,7 @@ const config: Phaser.Types.Core.GameConfig = {
             debug: false,
         },
     },
-    scene: [StartScene, GameScene],
+    scene: [StartScene, GameScene, HouseScene, StoreScene],
     scale: {
         mode: Phaser.Scale.FIT,
         autoCenter: Phaser.Scale.CENTER_BOTH,

@@ -1,277 +1,359 @@
 /**
- * UI.ts — HUD overlay utilities.
+ * UI.ts — DOM-based canvas overlay HUD.
  *
- * Phase 5 — thesis-ready UI:
- *  - 64-bar spectrogram (top-right, color-coded by frequency band)
- *  - Enhanced mode panel with mode description
- *  - Session seed display with "R to reseed" hint
- *  - Dynamic EQ / Compressor status labels
- *  - Full permanent instructions at bottom
- *  - Mixer status text
+ * The previous Phaser HUD was repeatedly affected by world camera zoom. This
+ * version is a normal HTML overlay pinned to the actual canvas rectangle, so
+ * zooming the character/world never moves or scales the buttons, toolbar,
+ * money, analyser, mode board or inventory.
  */
 import Phaser from 'phaser';
-import { AudioMode, FloorType } from '../types';
+import { AudioMode, FloorType, PlantVariant, ToolType } from '../types';
 import { MixerSnapshot } from '../audio/AdaptiveMixer';
+import { FarmState, SEED_CATALOG } from '../gameData';
 
 const MODE_LABELS: Record<AudioMode, string> = {
-    classic: 'Mode A: Classic Random + Adaptive Live Mix (FFT)',
-    live: 'Mode B: Live Drift + Memory + Adaptive Live Mix (FFT)',
+    classic: 'Mode A · Random Sample List',
+    live: 'Mode B · Adaptive Drift',
 };
 
 const MODE_DESCRIPTIONS: Record<AudioMode, string> = {
-    classic: 'i.i.d. random sample selection — no memory between events',
-    live:    'Granular synthesis with memory cursor — one continuous performer session',
+    classic: 'Each event picks one prepared sample, for example stone_01 / stone_02.',
+    live: 'Adaptive continuity: movement shapes pitch, brightness, weight and timing over time.',
 };
 
-/** Color per mode — red for A, green for B (high contrast for testing) */
 const MODE_COLORS: Record<AudioMode, string> = {
-    classic: '#ff6666',
-    live:    '#66ff88',
+    classic: '#ff927f',
+    live: '#9df8a6',
 };
 
-// ── Spectrogram constants (top-right) ────────────────────────
-const SPEC_MARGIN = 10;   // px from right/top edges
-const SPEC_BAR_W  = 3;    // px width of each bin bar
-const SPEC_BAR_GAP = 1;   // px gap between bars
-const SPEC_MAX_H  = 80;   // Max bar height (pixels)
-const SPEC_BINS   = 64;   // Number of FFT bins to display
+const TOOLS: { key: ToolType; label: string; icon: string }[] = [
+    { key: 'pickaxe', label: 'Pickaxe', icon: '⛏' },
+    { key: 'axe', label: 'Axe', icon: '🪓' },
+    { key: 'hoe', label: 'Hoe', icon: '⌐' },
+    { key: 'watering_can', label: 'Water', icon: '💧' },
+];
 
-// Color thresholds: bin index → color (low=red, mid=yellow, high=cyan)
-const LOW_BIN_END = 10;   // ~3 kHz boundary
-const MID_BIN_END = 30;   // ~13 kHz boundary
-function binColor(i: number): number {
-    if (i < LOW_BIN_END) return 0xff4444;   // Red (low)
-    if (i < MID_BIN_END) return 0xffcc44;   // Yellow (mid)
-    return 0x44ddff;                         // Cyan (high)
-}
+const PLANT_ASSETS: Record<PlantVariant, { folder: string; filePrefix: string }> = {
+    beat_beet: { folder: 'Beat_Beet', filePrefix: 'Beatbeet' },
+    crescendo_carrot: { folder: 'Crescendo_Carrot', filePrefix: 'CrescendoCarrot' },
+    echo_eggplant: { folder: 'Echo_Eggplant', filePrefix: 'EchoEggplant' },
+    melody_melon: { folder: 'Melody_Melon', filePrefix: 'MelodyMelon' },
+    rhythm_radish: { folder: 'Rhythm_Radish', filePrefix: 'RhythmRadish' },
+    treble_turnip: { folder: 'Treble_Turnip', filePrefix: 'TrebleTurnip' },
+    vinyl_vine: { folder: 'Vinyl_Vine', filePrefix: 'VinylVine' },
+};
 
-// Map dB range to 0..1 for bar height
 const DB_FLOOR = -60;
-const DB_CEIL  = 0;
+const DB_CEIL = 0;
+const SPEC_BINS = 64;
+
 function dbToNorm(db: number): number {
-    return Math.max(0, Math.min(1, (db - DB_FLOOR) / (DB_CEIL - DB_FLOOR)));
+    const safe = Number.isFinite(db) ? db : DB_FLOOR;
+    return Math.max(0, Math.min(1, (safe - DB_FLOOR) / (DB_CEIL - DB_FLOOR)));
 }
 
-// ── 3-band bar constants (left side) ─────────────────────────
-const BAR_X      = 10;
-const BAR_Y      = 110;
-const BAR_W      = 28;
-const BAR_GAP    = 6;
-const BAR_MAX_H  = 60;
-const BAR_LABEL_Y = BAR_Y + BAR_MAX_H + 4;
-const BAR_COLORS = {
-    low:  0x4488ff,
-    mid:  0xffaa22,
-    high: 0xff44aa,
-};
+function plantImageUrl(variant: PlantVariant, stage: 2 | 4): string {
+    const asset = PLANT_ASSETS[variant];
+    const suffix = stage === 2 ? '02_Sprout' : '04_Mature';
+    return `/assets/sprites/Plants/plants/${asset.folder}/${asset.filePrefix}_${suffix}.png`;
+}
+
+function clearChildren(el: HTMLElement): void {
+    while (el.firstChild) el.removeChild(el.firstChild);
+}
+
+function makeEl<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text) el.textContent = text;
+    return el;
+}
 
 export class UI {
-    private modeText: Phaser.GameObjects.Text;
-    private modeDescText: Phaser.GameObjects.Text;
-    private floorText: Phaser.GameObjects.Text;
-    private seedText: Phaser.GameObjects.Text;
-    private hintText: Phaser.GameObjects.Text;
-    private mixerStatusText: Phaser.GameObjects.Text;
-    private eqLabel: Phaser.GameObjects.Text;
-    private compLabel: Phaser.GameObjects.Text;
-    private fftGfx: Phaser.GameObjects.Graphics;
-    private specGfx: Phaser.GameObjects.Graphics;
+    private root: HTMLDivElement;
+    private modePanel: HTMLDivElement;
+    private modeTitle: HTMLDivElement;
+    private modeDesc: HTMLDivElement;
+    private floorText: HTMLDivElement;
+    private moneyText: HTMLDivElement;
+    private saveButton: HTMLButtonElement;
+    private saveStatus: HTMLDivElement;
+    private toolbar: HTMLDivElement;
+    private zoomPanel: HTMLDivElement;
+    private spectrumPanel: HTMLDivElement;
+    private spectrumBars: HTMLDivElement[] = [];
+    private mixPanel: HTMLDivElement;
+    private mixRows: { row: HTMLDivElement; fill: HTMLDivElement; text: HTMLDivElement }[] = [];
+    private inventoryPanel: HTMLDivElement;
+    private toolButtons = new Map<ToolType, HTMLButtonElement>();
 
-    // Bar label texts
-    private barLabels: Phaser.GameObjects.Text[] = [];
+    private activeTool: ToolType = 'hoe';
+    private inventoryOpen = false;
+    private onToolSelect?: (tool: ToolType) => void;
+    private onZoom?: (direction: number) => void;
+    private saveStatusUntil = 0;
+    private destroyed = false;
+    private readonly canvas: HTMLCanvasElement;
+    private readonly overlayHost: HTMLElement;
+    private readonly usesBodyFallback: boolean;
+    private readonly resizeHandler: () => void;
 
-    private scene: Phaser.Scene;
+    constructor(scene: Phaser.Scene, onToolSelect?: (tool: ToolType) => void, onZoom?: (direction: number) => void) {
+        this.onToolSelect = onToolSelect;
+        this.onZoom = onZoom;
 
-    constructor(scene: Phaser.Scene) {
-        this.scene = scene;
+        this.canvas = scene.game.canvas;
+        this.overlayHost = document.getElementById('game-container') ?? this.canvas.parentElement ?? document.body;
+        this.usesBodyFallback = this.overlayHost === document.body;
+        this.resizeHandler = () => this.syncToCanvas();
+        this.root = makeEl('div', 'stardew-hud-overlay') as HTMLDivElement;
+        this.overlayHost.appendChild(this.root);
+        window.addEventListener('resize', this.resizeHandler, { passive: true });
+        this.syncToCanvas();
 
-        const style: Phaser.Types.GameObjects.Text.TextStyle = {
-            fontSize: '18px',
-            color: '#ffffff',
-            fontFamily: 'monospace',
-            backgroundColor: '#000000cc',
-            padding: { x: 8, y: 6 },
-        };
+        this.modePanel = makeEl('div', 'hud-panel mode-panel') as HTMLDivElement;
+        this.modeTitle = makeEl('div', 'mode-title') as HTMLDivElement;
+        this.modeDesc = makeEl('div', 'mode-desc') as HTMLDivElement;
+        this.floorText = makeEl('div', 'mode-floor') as HTMLDivElement;
+        this.modePanel.append(this.modeTitle, this.modeDesc, this.floorText);
 
-        // Mode indicator (top-left, large + color-coded)
-        this.modeText = scene.add.text(10, 10, '', { ...style })
-            .setScrollFactor(0)
-            .setDepth(100);
+        const wallet = makeEl('div', 'hud-panel wallet-panel') as HTMLDivElement;
+        this.moneyText = makeEl('div', 'money-text') as HTMLDivElement;
+        this.saveButton = makeEl('button', 'save-button', 'SAVE') as HTMLButtonElement;
+        this.saveStatus = makeEl('div', 'save-status') as HTMLDivElement;
+        this.saveButton.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            FarmState.saveProgress();
+            this.saveStatusUntil = performance.now() + 1500;
+            this.renderInventory();
+        });
+        wallet.append(this.moneyText, this.saveButton, this.saveStatus);
 
-        // Mode description (below mode)
-        this.modeDescText = scene.add.text(10, 44, '', {
-            ...style, fontSize: '11px', color: '#aaaacc',
-            backgroundColor: '#000000aa',
-        }).setScrollFactor(0).setDepth(100);
-
-        // Floor type indicator
-        this.floorText = scene.add.text(10, 70, '', { ...style, fontSize: '13px' })
-            .setScrollFactor(0)
-            .setDepth(100);
-
-        // Session seed display
-        this.seedText = scene.add.text(10, 92, '', {
-            ...style, fontSize: '11px', color: '#cccc88',
-            backgroundColor: '#000000aa',
-            padding: { x: 4, y: 2 },
-        }).setScrollFactor(0).setDepth(100);
-
-        // FFT 3-band bar graphics
-        this.fftGfx = scene.add.graphics()
-            .setScrollFactor(0)
-            .setDepth(100);
-
-        // Bar labels: Low / Mid / High
-        const labelStyle: Phaser.Types.GameObjects.Text.TextStyle = {
-            fontSize: '9px', color: '#ffffffaa', fontFamily: 'monospace',
-        };
-        const labels = ['Low', 'Mid', 'Hi'];
-        for (let i = 0; i < 3; i++) {
-            const lbl = scene.add.text(
-                BAR_X + i * (BAR_W + BAR_GAP) + BAR_W / 2,
-                BAR_LABEL_Y,
-                labels[i],
-                labelStyle
-            ).setOrigin(0.5, 0).setScrollFactor(0).setDepth(100);
-            this.barLabels.push(lbl);
+        this.toolbar = makeEl('div', 'hud-panel tool-panel') as HTMLDivElement;
+        for (const tool of TOOLS) {
+            const btn = makeEl('button', 'tool-button') as HTMLButtonElement;
+            btn.dataset.tool = tool.key;
+            btn.innerHTML = `<span class="tool-icon">${tool.icon}</span><span class="tool-label">${tool.label}</span>`;
+            btn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                this.onToolSelect?.(tool.key);
+            });
+            this.toolbar.appendChild(btn);
+            this.toolButtons.set(tool.key, btn);
         }
 
-        // Dynamic EQ label
-        this.eqLabel = scene.add.text(10, BAR_LABEL_Y + 16, 'Dynamic EQ', {
-            fontSize: '10px', color: '#88ff88', fontFamily: 'monospace',
-            backgroundColor: '#000000aa', padding: { x: 3, y: 1 },
-        }).setScrollFactor(0).setDepth(100);
+        this.zoomPanel = makeEl('div', 'hud-panel zoom-panel') as HTMLDivElement;
+        const zoomOut = makeEl('button', 'zoom-button', '−') as HTMLButtonElement;
+        const zoomIn = makeEl('button', 'zoom-button', '+') as HTMLButtonElement;
+        zoomOut.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); this.onZoom?.(-1); });
+        zoomIn.addEventListener('click', (ev) => { ev.preventDefault(); ev.stopPropagation(); this.onZoom?.(1); });
+        this.zoomPanel.append(zoomOut, zoomIn);
 
-        // Compressor label
-        this.compLabel = scene.add.text(100, BAR_LABEL_Y + 16, 'Compressor', {
-            fontSize: '10px', color: '#88ff88', fontFamily: 'monospace',
-            backgroundColor: '#000000aa', padding: { x: 3, y: 1 },
-        }).setScrollFactor(0).setDepth(100);
+        this.spectrumPanel = makeEl('div', 'hud-panel spectrum-panel') as HTMLDivElement;
+        const specTitle = makeEl('div', 'analysis-title', 'SPECTRUM') as HTMLDivElement;
+        const specBars = makeEl('div', 'spectrum-bars') as HTMLDivElement;
+        for (let i = 0; i < SPEC_BINS; i++) {
+            const bar = makeEl('div', 'spectrum-bar') as HTMLDivElement;
+            bar.style.height = '2px';
+            specBars.appendChild(bar);
+            this.spectrumBars.push(bar);
+        }
+        const axis = makeEl('div', 'spectrum-axis') as HTMLDivElement;
+        axis.innerHTML = '<span>20Hz</span><span>1k</span><span>20k</span>';
+        this.spectrumPanel.append(specTitle, specBars, axis);
 
-        // Mixer status text
-        this.mixerStatusText = scene.add.text(10, BAR_LABEL_Y + 34, '', {
-            ...style,
-            fontSize: '11px',
-            backgroundColor: '#000000aa',
-            padding: { x: 4, y: 2 },
-        }).setScrollFactor(0).setDepth(100);
+        this.mixPanel = makeEl('div', 'hud-panel mix-panel') as HTMLDivElement;
+        const mixTitle = makeEl('div', 'analysis-title', 'FFT MIX') as HTMLDivElement;
+        this.mixPanel.appendChild(mixTitle);
+        for (const band of ['LOW', 'MID', 'HIGH']) {
+            const row = makeEl('div', 'mix-row') as HTMLDivElement;
+            const label = makeEl('span', 'mix-label', band) as HTMLSpanElement;
+            const track = makeEl('div', 'mix-track') as HTMLDivElement;
+            const fill = makeEl('div', `mix-fill ${band.toLowerCase()}`) as HTMLDivElement;
+            const text = makeEl('span', 'mix-value', '+0.0dB') as HTMLSpanElement;
+            track.appendChild(fill);
+            row.append(label, track, text);
+            this.mixPanel.appendChild(row);
+            this.mixRows.push({ row, fill, text: text as HTMLDivElement });
+        }
 
-        // Spectrogram graphics (top-right)
-        this.specGfx = scene.add.graphics()
-            .setScrollFactor(0)
-            .setDepth(100);
+        this.inventoryPanel = makeEl('div', 'inventory-panel hidden') as HTMLDivElement;
 
-        // Controls hint (bottom, full instructions)
-        this.hintText = scene.add.text(10, 0,
-            'WASD/Arrows: Move  |  E: Interact  |  M: Switch mode  |  R: New seed',
-            { ...style, fontSize: '12px' }
-        ).setScrollFactor(0).setDepth(100);
+        this.root.append(this.modePanel, wallet, this.spectrumPanel, this.mixPanel, this.toolbar, this.zoomPanel, this.inventoryPanel);
 
-        // Position hint at bottom
-        this.repositionHint(scene);
-        scene.scale.on('resize', () => this.repositionHint(scene));
+        scene.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.destroy());
+        scene.events.once(Phaser.Scenes.Events.DESTROY, () => this.destroy());
+        this.updateActiveTool();
     }
 
-    /** Update displayed mode, floor type, seed, and mixer visualisation */
-    update(mode: AudioMode, floor: FloorType, mixer?: MixerSnapshot, seed?: string): void {
-        this.modeText.setText(`${MODE_LABELS[mode]}  (press M to switch)`);
-        this.modeText.setColor(MODE_COLORS[mode]);
-        this.modeDescText.setText(MODE_DESCRIPTIONS[mode]);
-        this.floorText.setText(`Floor: ${floor}`);
+    destroy(): void {
+        if (this.destroyed) return;
+        this.destroyed = true;
+        window.removeEventListener('resize', this.resizeHandler);
+        this.root.remove();
+    }
 
-        if (seed) {
-            this.seedText.setText(`Seed: ${seed}  (R to reseed)`);
+    private syncToCanvas(): void {
+        if (this.destroyed) return;
+
+        // Normal path: the HUD lives inside #game-container and uses absolute
+        // inset:0, so it is tied to the canvas frame and never affected by
+        // Phaser camera zoom. No per-frame rect measuring = no shake.
+        if (!this.usesBodyFallback) {
+            this.root.style.left = '';
+            this.root.style.top = '';
+            this.root.style.width = '';
+            this.root.style.height = '';
+            return;
         }
 
-        if (mixer) {
-            this.drawFFTBars(mixer);
-            this.drawSpectrogram(mixer);
-            this.mixerStatusText.setText(mixer.statusText);
+        // Fallback for unusual embeds where #game-container is missing.
+        const rect = this.canvas.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return;
+        const style = this.root.style;
+        style.position = 'fixed';
+        style.left = `${rect.left}px`;
+        style.top = `${rect.top}px`;
+        style.width = `${rect.width}px`;
+        style.height = `${rect.height}px`;
+    }
 
-            // Color the status text based on activity
-            if (mixer.lowDucking || mixer.midCutting || mixer.compressorEngaged) {
-                this.mixerStatusText.setColor('#ffcc44');
-            } else {
-                this.mixerStatusText.setColor('#88ff88');
-            }
+    update(mode: AudioMode, floor: FloorType, mixer?: MixerSnapshot, _seed?: string, tool: ToolType = this.activeTool): void {
+        if (this.destroyed) return;
+        this.syncToCanvas();
 
-            // EQ label: highlight when active
-            const eqActive = mixer.lowDucking || mixer.midCutting;
-            this.eqLabel.setColor(eqActive ? '#ffcc44' : '#88ff88');
-            this.compLabel.setColor(mixer.compressorEngaged ? '#ffcc44' : '#88ff88');
+        this.activeTool = tool;
+        this.modeTitle.textContent = MODE_LABELS[mode];
+        this.modeTitle.style.color = MODE_COLORS[mode];
+        this.modePanel.style.setProperty('--mode-color', MODE_COLORS[mode]);
+        this.modeDesc.textContent = MODE_DESCRIPTIONS[mode];
+        this.floorText.textContent = `Floor: ${floor.toUpperCase()}`;
+        this.moneyText.textContent = `◈ ${FarmState.coins}`;
+        this.saveStatus.textContent = performance.now() < this.saveStatusUntil
+            ? 'saved'
+            : (FarmState.hasManualSave ? 'manual save' : 'fresh run');
+        this.saveStatus.classList.toggle('saved-now', performance.now() < this.saveStatusUntil);
+        this.updateActiveTool();
+
+        if (mixer) this.updateAnalysis(mixer);
+        if (this.inventoryOpen) this.renderInventory();
+    }
+
+    toggleInventory(): void {
+        this.inventoryOpen = !this.inventoryOpen;
+        this.inventoryPanel.classList.toggle('hidden', !this.inventoryOpen);
+        this.renderInventory();
+    }
+
+    isInventoryOpen(): boolean {
+        return this.inventoryOpen;
+    }
+
+    setActiveTool(tool: ToolType): void {
+        this.activeTool = tool;
+        this.updateActiveTool();
+    }
+
+    private updateActiveTool(): void {
+        for (const [tool, btn] of this.toolButtons) {
+            btn.classList.toggle('active', tool === this.activeTool);
         }
     }
 
-    /** Draw three vertical bars representing Low / Mid / High band energy */
-    private drawFFTBars(mixer: MixerSnapshot): void {
-        this.fftGfx.clear();
-
-        // Background panel
-        const panelW = 3 * BAR_W + 2 * BAR_GAP + 12;
-        this.fftGfx.fillStyle(0x000000, 0.6);
-        this.fftGfx.fillRoundedRect(BAR_X - 4, BAR_Y - 4, panelW, BAR_MAX_H + 8, 4);
-
-        const bands = [
-            { db: mixer.lowDb,  color: BAR_COLORS.low,  eqDb: mixer.lowGainDb,  active: mixer.lowDucking },
-            { db: mixer.midDb,  color: BAR_COLORS.mid,  eqDb: mixer.midGainDb,  active: mixer.midCutting },
-            { db: mixer.highDb, color: BAR_COLORS.high, eqDb: mixer.highGainDb, active: mixer.compressorEngaged },
-        ];
-
-        for (let i = 0; i < bands.length; i++) {
-            const band = bands[i];
-            const norm = dbToNorm(band.db);
-            const barH = Math.max(2, norm * BAR_MAX_H);
-            const x = BAR_X + i * (BAR_W + BAR_GAP);
-            const y = BAR_Y + BAR_MAX_H - barH;
-
-            const alpha = band.active ? 1.0 : 0.7;
-            this.fftGfx.fillStyle(band.color, alpha);
-            this.fftGfx.fillRect(x, y, BAR_W, barH);
-
-            if (band.eqDb < -1) {
-                const cutNorm = Math.abs(band.eqDb) / 10;
-                const lineH = Math.min(barH, cutNorm * BAR_MAX_H);
-                this.fftGfx.fillStyle(0xff2222, 0.7);
-                this.fftGfx.fillRect(x, y, BAR_W, Math.max(2, lineH));
-            }
-
-            if (band.eqDb > 1) {
-                this.fftGfx.fillStyle(0x22ff44, 0.6);
-                this.fftGfx.fillRect(x, y - 3, BAR_W, 3);
-            }
-        }
-    }
-
-    /** Draw 64-bar spectrogram in the top-right corner */
-    private drawSpectrogram(mixer: MixerSnapshot): void {
-        this.specGfx.clear();
-
+    private updateAnalysis(mixer: MixerSnapshot): void {
         const bins = mixer.fftBins;
-        if (!bins || bins.length === 0) return;
-
-        const specW = SPEC_BINS * (SPEC_BAR_W + SPEC_BAR_GAP);
-        const scaleW = this.scene.scale.width;
-        const startX = scaleW - specW - SPEC_MARGIN;
-        const startY = SPEC_MARGIN;
-
-        // Background panel
-        this.specGfx.fillStyle(0x000000, 0.6);
-        this.specGfx.fillRoundedRect(startX - 4, startY - 4, specW + 8, SPEC_MAX_H + 8, 4);
-
-        const binCount = Math.min(SPEC_BINS, bins.length);
-        for (let i = 0; i < binCount; i++) {
-            const norm = dbToNorm(bins[i]);
-            const barH = Math.max(1, norm * SPEC_MAX_H);
-            const x = startX + i * (SPEC_BAR_W + SPEC_BAR_GAP);
-            const y = startY + SPEC_MAX_H - barH;
-
-            this.specGfx.fillStyle(binColor(i), 0.85);
-            this.specGfx.fillRect(x, y, SPEC_BAR_W, barH);
+        for (let i = 0; i < this.spectrumBars.length; i++) {
+            const norm = dbToNorm(bins?.[i] ?? -60);
+            this.spectrumBars[i].style.height = `${Math.max(2, Math.round(norm * 46))}px`;
+            this.spectrumBars[i].style.opacity = `${0.35 + norm * 0.65}`;
         }
+
+        const rows = [
+            { db: mixer.lowDb, gain: mixer.lowGainDb, active: mixer.lowDucking },
+            { db: mixer.midDb, gain: mixer.midGainDb, active: mixer.midCutting },
+            { db: mixer.highDb, gain: mixer.highGainDb, active: mixer.compressorEngaged },
+        ];
+        rows.forEach((row, i) => {
+            const norm = dbToNorm(row.db);
+            this.mixRows[i].fill.style.width = `${Math.max(4, norm * 100)}%`;
+            this.mixRows[i].text.textContent = `${Math.round(row.db)}dB`;
+            this.mixRows[i].row.classList.toggle('active', row.active);
+        });
     }
 
-    private repositionHint(scene: Phaser.Scene): void {
-        const h = scene.scale.height;
-        this.hintText.setY(h - 30);
+    private renderInventory(): void {
+        if (!this.inventoryOpen) {
+            clearChildren(this.inventoryPanel);
+            return;
+        }
+
+        clearChildren(this.inventoryPanel);
+        const frame = makeEl('div', 'inventory-frame') as HTMLDivElement;
+        const header = makeEl('div', 'inventory-header') as HTMLDivElement;
+        header.innerHTML = '<span>Bag</span><span class="inventory-close-hint">TAB</span>';
+        frame.appendChild(header);
+
+        const content = makeEl('div', 'inventory-content') as HTMLDivElement;
+
+        const toolsSection = makeEl('section', 'inventory-section') as HTMLElement;
+        toolsSection.appendChild(makeEl('h3', '', 'Tools'));
+        const toolsGrid = makeEl('div', 'inventory-grid tools-grid') as HTMLDivElement;
+        for (const tool of TOOLS) {
+            const slot = makeEl('button', `inventory-slot tool-slot ${tool.key === this.activeTool ? 'active' : ''}`) as HTMLButtonElement;
+            slot.innerHTML = `<span class="inventory-tool-icon">${tool.icon}</span><span>${tool.label}</span>`;
+            slot.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                this.onToolSelect?.(tool.key);
+            });
+            toolsGrid.appendChild(slot);
+        }
+        toolsSection.appendChild(toolsGrid);
+        content.appendChild(toolsSection);
+
+        const ownedSeeds = SEED_CATALOG.filter((item) => FarmState.getSeedCount(item.variant) > 0);
+        const ownedHarvests = SEED_CATALOG.filter((item) => FarmState.getHarvestCount(item.variant) > 0);
+
+        const bagSection = makeEl('section', 'inventory-section bag-section') as HTMLElement;
+        bagSection.appendChild(makeEl('h3', '', 'Plants / Seeds'));
+        const itemsGrid = makeEl('div', 'inventory-grid items-grid') as HTMLDivElement;
+
+        for (const item of ownedSeeds) {
+            itemsGrid.appendChild(this.createInventoryItem(
+                plantImageUrl(item.variant, 2),
+                item.seedName.replace(' Seeds', ''),
+                FarmState.getSeedCount(item.variant),
+                'Seed'
+            ));
+        }
+        for (const item of ownedHarvests) {
+            itemsGrid.appendChild(this.createInventoryItem(
+                plantImageUrl(item.variant, 4),
+                item.cropName,
+                FarmState.getHarvestCount(item.variant),
+                'Crop'
+            ));
+        }
+        if (ownedSeeds.length === 0 && ownedHarvests.length === 0) {
+            itemsGrid.appendChild(makeEl('div', 'inventory-empty', 'Your bag has no seeds or harvested plants yet.'));
+        }
+
+        bagSection.appendChild(itemsGrid);
+        content.appendChild(bagSection);
+        frame.appendChild(content);
+        this.inventoryPanel.appendChild(frame);
+    }
+
+    private createInventoryItem(src: string, label: string, count: number, tag: string): HTMLDivElement {
+        const slot = makeEl('div', 'inventory-slot item-slot') as HTMLDivElement;
+        const img = makeEl('img', 'inventory-item-img') as HTMLImageElement;
+        img.src = src;
+        img.alt = label;
+        const meta = makeEl('div', 'inventory-item-meta') as HTMLDivElement;
+        meta.append(makeEl('strong', '', label), makeEl('span', '', `${tag} × ${count}`));
+        slot.append(img, meta);
+        return slot;
     }
 }

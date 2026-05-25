@@ -1,276 +1,179 @@
 /**
- * LiveDriftMode.ts — Mode B: Live Drift + Memory granular audio.
+ * LiveDriftMode.ts — Mode B: safe adaptive short-sample playback.
  *
- * ┌─────────────────────────────────────────────────────────────────────┐
- * │  THESIS HEART                                                       │
- * │                                                                     │
- * │  Instead of picking one random short sample per event (Mode A),     │
- * │  Live Drift reads grains from a LONG continuous recording using     │
- * │  Tone.GrainPlayer.  The playback position maintains MEMORY:         │
- * │  each new grain starts near where the previous grain ended,         │
- * │  giving the listener the impression of one performer continuing     │
- * │  a session rather than a library of disconnected one-shots.         │
- * │                                                                     │
- * │  Grain parameters (rate, detune, size, overlap, volume) are not     │
- * │  i.i.d. random — they are DERIVED from the slowly drifting          │
- * │  PerformerState, which itself responds to gameplay input via         │
- * │  exponential lerp.  The result: smooth, organic, human-feeling      │
- * │  sound that evolves with the player's movement.                     │
- * └─────────────────────────────────────────────────────────────────────┘
+ * This version intentionally avoids long loops, granular voices, pooled Tone
+ * Players and fallback synths. It uses the same small one-shot sample set as
+ * Mode A, but chooses and shapes playback with short-term memory and movement
+ * state. The important rule: Mode B must never be able to block the music loop
+ * or stall Phaser's frame update.
  */
 import * as Tone from 'tone';
-import { IAudioMode } from '../AudioManager';
-import { seededRandom } from '../AudioManager';
+import { IAudioMode, seededRandom } from '../AudioManager';
 import { PerformerState } from '../PerformerState';
 import { FloorType, PropType } from '../../types';
 
-// ── Long-loop sample paths ───────────────────────────────────
-// These are continuous recordings (60–180 s) of a performer walking
-// on each surface / interacting with each prop, recorded in one take.
-// Place them in  public/assets/audio/long_loops/
-
-const FOOTSTEP_LOOPS: Record<FloorType, string> = {
-    wood:   '/assets/audio/long_loops/wood_long.mp3',
-    gravel: '/assets/audio/long_loops/gravel_long.mp3',
-    stone:  '/assets/audio/long_loops/stone_long.mp3',
+const FOOTSTEP_SAMPLES: Record<FloorType, string[]> = {
+    grass: ['/assets/audio/footsteps/wood/wood_01.mp3'],
+    sand: ['/assets/audio/footsteps/gravel/gravel_01.mp3'],
+    water: ['/assets/audio/footsteps/stone/stone_01.mp3'],
+    stone: ['/assets/audio/footsteps/stone/stone_01.mp3'],
+    wood: ['/assets/audio/footsteps/wood/wood_01.mp3'],
+    gravel: ['/assets/audio/footsteps/gravel/gravel_01.mp3'],
 };
 
-const PROP_LOOPS: Record<PropType, string> = {
-    keys:   '/assets/audio/long_loops/keys_long.mp3',
-    cloth:  '/assets/audio/long_loops/cloth_long.mp3',
-    barrel: '/assets/audio/long_loops/barrel_long.mp3',
-    door:   '/assets/audio/long_loops/door_long.mp3',
+const PROP_SAMPLES: Record<PropType, string[]> = {
+    keys: ['/assets/audio/props/keys_01.mp3'],
+    cloth: ['/assets/audio/props/cloth_01.mp3'],
+    barrel: ['/assets/audio/props/barrel_01.mp3'],
+    door: ['/assets/audio/props/door_01.mp3'],
+    building: ['/assets/audio/props/door_01.mp3'],
+    plant: ['/assets/audio/props/keys_01.mp3'],
 };
 
-// ── Gain compensation ────────────────────────────────────────
-// Both modes should output at equal perceived loudness.
-// Adjust this if Mode B is louder/quieter than Mode A in testing.
-const OUTPUT_GAIN_DB = -3;
+const BASE_VOLUME_DB = -4;
+const MIN_RETRIGGER_MS = 52;
 
-// ── Memory nudge range (seconds) ─────────────────────────────
-// When choosing the next grain start, we pick within ±NUDGE of the
-// previous position. This is the "memory" — the performer continues
-// roughly where they left off instead of jumping to a random spot.
-const POSITION_NUDGE_SEC = 2.0;
-
-// ──────────────────────────────────────────────────────────────
-
-/**
- * Wraps a single Tone.GrainPlayer + processing chain for one
- * long recording. Maintains a "cursor" position for memory.
- */
-class GrainVoice {
-    player: Tone.GrainPlayer;
-    filter: Tone.Filter;
-    reverb: Tone.Reverb;
-    reverbGain: Tone.Gain;
-    dryGain: Tone.Gain;
-    limiter: Tone.Limiter;
-
-    /** Remembered playback cursor — the "memory" of this voice */
-    cursor = 0;
-
-    /** Duration of the loaded buffer (seconds), set after load */
-    duration = 0;
-
-    loaded = false;
-
-    /** Seeded PRNG for deterministic cursor nudge */
-    private rng: () => number;
-
-    constructor(url: string, output: Tone.ToneAudioNode, rng: () => number) {
-        this.rng = rng;
-        // GrainPlayer: the core granular engine
-        this.player = new Tone.GrainPlayer({
-            url,
-            loop: true,
-            grainSize: 0.2,
-            overlap: 0.1,
-            playbackRate: 1,
-            onload: () => {
-                this.loaded = true;
-                this.duration = this.player.buffer.duration;
-                console.log(`[GrainVoice] Loaded ${url}  (${this.duration.toFixed(1)}s)`);
-            },
-            onerror: () => {
-                console.warn(`[GrainVoice] Failed to load: ${url}`);
-            },
-        });
-
-        // Per-grain processing chain:
-        //   GrainPlayer → Filter → dry/wet split → Limiter → output
-        this.filter = new Tone.Filter({ type: 'lowpass', frequency: 8000, rolloff: -12 });
-        this.dryGain = new Tone.Gain(1);
-        this.reverbGain = new Tone.Gain(0);
-        this.reverb = new Tone.Reverb({ decay: 2.5, wet: 1 });
-        this.limiter = new Tone.Limiter(-1);
-
-        // Wiring
-        this.player.connect(this.filter);
-        this.filter.connect(this.dryGain);
-        this.filter.connect(this.reverb);
-        this.reverb.connect(this.reverbGain);
-        this.dryGain.connect(this.limiter);
-        this.reverbGain.connect(this.limiter);
-        this.limiter.connect(output);
-    }
-
-    /**
-     * Trigger a grain burst shaped by PerformerState.
-     *
-     * MEMORY: The cursor advances by a small random nudge instead of
-     * jumping to a totally random position.  This is the key difference
-     * from i.i.d. random: the performer "continues" their take.
-     */
-    trigger(state: PerformerState): void {
-        if (!this.loaded || this.duration === 0) return;
-
-        // ── Memory-based cursor advance ──────────────────────
-        // Nudge the cursor forward/backward by a small random offset.
-        // Wraps around so we never go out of bounds.
-        const nudge = (this.rng() * 2 - 1) * POSITION_NUDGE_SEC;
-        this.cursor = ((this.cursor + nudge) % this.duration + this.duration) % this.duration;
-
-        // ── Derive grain parameters from PerformerState ──────
-        // (These formulas map the 0–1 state dimensions into audio params)
-        this.player.playbackRate = 0.9 + state.energy * 0.3;
-        this.player.detune       = -200 + state.brightness * 400;
-        this.player.grainSize    = 0.15 + state.weight * 0.25;
-        this.player.overlap      = 0.08 + state.tightness * 0.12;
-
-        // Volume: heavier weight → slightly louder, normalised around OUTPUT_GAIN_DB
-        const weightVol = OUTPUT_GAIN_DB + (state.weight - 0.5) * 4;
-        this.player.volume.value = weightVol;
-
-        // ── Filter: brightness controls cutoff ───────────────
-        // Low brightness → muffled (2 kHz), high → open (12 kHz)
-        this.filter.frequency.value = 2000 + state.brightness * 10000;
-
-        // ── Reverb send: wetness controls dry/wet balance ────
-        this.dryGain.gain.value    = 1 - state.wetness * 0.5;
-        this.reverbGain.gain.value = state.wetness * 0.6;
-
-        // ── Set the loop start to our cursor position ────────
-        this.player.loopStart = this.cursor;
-        this.player.loopEnd   = Math.min(this.cursor + this.player.grainSize * 4, this.duration);
-
-        // Restart the grain player from the cursor
-        if (this.player.state === 'started') {
-            this.player.stop();
-        }
-        // Play a short burst (grainSize * 3) — enough for the footstep/prop event
-        this.player.start(undefined, this.cursor);
-
-        // Schedule stop after a short window so grains don't run forever
-        const burstDuration = this.player.grainSize * 4;
-        this.player.stop(`+${burstDuration}`);
-    }
-
-    dispose(): void {
-        this.player.dispose();
-        this.filter.dispose();
-        this.reverb.dispose();
-        this.reverbGain.dispose();
-        this.dryGain.dispose();
-        this.limiter.dispose();
-    }
+function clamp(v: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, v));
 }
 
-// ──────────────────────────────────────────────────────────────
+function midiToRate(semitones: number): number {
+    return Math.pow(2, semitones / 12);
+}
+
+type SampleGroup = FloorType | PropType;
+
 export class LiveDriftMode implements IAudioMode {
-    private state: PerformerState;
-
-    /** One GrainVoice per floor type */
-    private footstepVoices = new Map<FloorType, GrainVoice>();
-    /** One GrainVoice per prop type */
-    private propVoices = new Map<PropType, GrainVoice>();
-
-    /** Master output gain shared with ClassicMode for equal loudness */
-    private masterGain: Tone.Gain;
-
-    private initialized = false;
-
-    /** External output node (shared bus from AudioManager) */
-    private externalOutput: Tone.ToneAudioNode;
-
-    /** Seeded PRNG */
+    private players = new Map<string, Tone.Player>();
     private rng: () => number;
+    private initialized = false;
+    private disposed = false;
+    private memory = new Map<SampleGroup, { index: number; pitch: number; volume: number; brightness: number; lastMs: number; count: number }>();
 
-    constructor(performerState: PerformerState, output: Tone.ToneAudioNode, seed: string) {
-        this.state = performerState;
-        this.externalOutput = output;
-        this.rng = seededRandom(seed + '_livedrift');
-        this.masterGain = new Tone.Gain(1);
-        this.masterGain.connect(this.externalOutput);
+    constructor(private readonly state: PerformerState, private readonly output: Tone.ToneAudioNode, seed: string) {
+        this.rng = seededRandom(seed + '_safe_mode_b_v21');
     }
-
-    // ── Lifecycle ─────────────────────────────────────────────
 
     async init(): Promise<void> {
         if (this.initialized) return;
+        const urls = new Set<string>();
+        for (const list of Object.values(FOOTSTEP_SAMPLES)) list.forEach((url) => urls.add(url));
+        for (const list of Object.values(PROP_SAMPLES)) list.forEach((url) => urls.add(url));
 
-        // Create GrainVoice for each footstep loop
-        for (const [floor, url] of Object.entries(FOOTSTEP_LOOPS)) {
-            this.footstepVoices.set(floor as FloorType, new GrainVoice(url, this.masterGain, this.rng));
-        }
-
-        // Create GrainVoice for each prop loop
-        for (const [prop, url] of Object.entries(PROP_LOOPS)) {
-            this.propVoices.set(prop as PropType, new GrainVoice(url, this.masterGain, this.rng));
-        }
-
-        // Wait for all buffers to attempt loading (non-blocking on failure)
-        await new Promise<void>((resolve) => {
-            const check = () => {
-                const allVoices = [...this.footstepVoices.values(), ...this.propVoices.values()];
-                const allSettled = allVoices.every((v) => v.loaded || v.duration === 0);
-                if (allSettled) {
+        const loads: Promise<void>[] = [];
+        for (const url of urls) {
+            loads.push(new Promise<void>((resolve) => {
+                try {
+                    const player = new Tone.Player({
+                        url,
+                        volume: BASE_VOLUME_DB,
+                        fadeOut: 0.008,
+                        onload: () => {
+                            if (!this.disposed) this.players.set(url, player);
+                            resolve();
+                        },
+                        onerror: () => resolve(),
+                    });
+                    player.connect(this.output);
+                } catch {
                     resolve();
-                } else {
-                    setTimeout(check, 100);
                 }
-            };
-            // Start checking after a short delay to give Tone time to fetch
-            setTimeout(check, 200);
-        });
+            }));
+        }
 
+        await Promise.all(loads);
         this.initialized = true;
-        console.log('[LiveDriftMode] Initialized — grain voices ready');
+        console.log(`[LiveDriftMode] Mode B ready — ${this.players.size} short samples loaded`);
+    }
+
+    playFootstep(floor: FloorType): void {
+        this.playAdaptive(floor, FOOTSTEP_SAMPLES[floor], 'footstep');
+    }
+
+    playPropInteract(prop: PropType): void {
+        this.playAdaptive(prop, PROP_SAMPLES[prop], 'prop');
+    }
+
+    private playAdaptive(group: SampleGroup, urls: string[], kind: 'footstep' | 'prop'): void {
+        if (this.disposed || !this.initialized || urls.length === 0) return;
+
+        const now = performance.now();
+        const prev = this.memory.get(group) ?? {
+            index: Math.floor(this.rng() * urls.length),
+            pitch: 0,
+            volume: BASE_VOLUME_DB,
+            brightness: 0.5,
+            lastMs: -Infinity,
+            count: 0,
+        };
+        if (now - prev.lastMs < MIN_RETRIGGER_MS) return;
+
+        const energy = clamp(this.state.energy, 0, 1);
+        const weight = clamp(this.state.weight, 0, 1);
+        const brightness = clamp(this.state.brightness, 0, 1);
+        const continuity = clamp(this.state.tightness, 0, 1);
+        const randomBend = (this.rng() * 2 - 1);
+        const phrase = Math.sin(prev.count * 0.31 + energy * 2.2);
+
+        // Mode B still changes, but it changes through drift: neighbouring
+        // choices and smooth parameter movement instead of hard unrelated jumps.
+        const jumpChance = kind === 'footstep'
+            ? clamp(0.18 + energy * 0.22 - continuity * 0.10, 0.10, 0.44)
+            : 0.36;
+        const nextIndex = this.rng() < jumpChance
+            ? Math.floor(this.rng() * urls.length)
+            : (prev.index + 1) % urls.length;
+        const url = urls[nextIndex];
+        const player = this.players.get(url);
+        if (!player || !player.loaded) return;
+
+        const targetPitch = clamp(
+            (energy - 0.45) * 2.1 +
+            (brightness - 0.5) * 1.35 +
+            phrase * 0.85 +
+            randomBend * 0.55,
+            -4.2,
+            4.2
+        );
+        const targetVolume = clamp(
+            BASE_VOLUME_DB - 2.5 +
+            weight * 4.0 +
+            energy * 1.4 +
+            randomBend * 1.2,
+            -10,
+            1.5
+        );
+
+        const pitch = prev.pitch * 0.52 + targetPitch * 0.48;
+        const volume = prev.volume * 0.48 + targetVolume * 0.52;
+
+        try {
+            player.playbackRate = midiToRate(pitch);
+            player.volume.value = volume;
+
+            // Rewind only this one-shot. This mirrors the stable Mode A path and
+            // avoids overlapping long voices or stopping global/music players.
+            if (player.state === 'started') player.stop();
+            player.start(undefined, 0);
+        } catch (err) {
+            console.warn('[LiveDriftMode] Ignored one-shot playback race:', err);
+        }
+
+        this.memory.set(group, {
+            index: nextIndex,
+            pitch,
+            volume,
+            brightness,
+            lastMs: now,
+            count: prev.count + 1,
+        });
     }
 
     dispose(): void {
-        for (const v of this.footstepVoices.values()) v.dispose();
-        for (const v of this.propVoices.values()) v.dispose();
-        this.footstepVoices.clear();
-        this.propVoices.clear();
-        this.masterGain.dispose();
+        this.disposed = true;
+        for (const player of this.players.values()) player.dispose();
+        this.players.clear();
+        this.memory.clear();
         this.initialized = false;
-    }
-
-    // ── Sound triggers ────────────────────────────────────────
-
-    /**
-     * Trigger a granular footstep.
-     *
-     * Unlike ClassicMode which picks a random 0.3s sample each time,
-     * this reads grains from a long continuous recording.  The grain
-     * position has MEMORY (cursor) and the parameters DRIFT with the
-     * PerformerState — no two footsteps sound the same yet they all
-     * feel connected, as if one person is walking in one take.
-     */
-    playFootstep(floor: FloorType): void {
-        const voice = this.footstepVoices.get(floor);
-        if (!voice) return;
-        voice.trigger(this.state);
-    }
-
-    /**
-     * Trigger a granular prop interaction sound.
-     * Same memory + drift logic as footsteps.
-     */
-    playPropInteract(prop: PropType): void {
-        const voice = this.propVoices.get(prop);
-        if (!voice) return;
-        voice.trigger(this.state);
     }
 }

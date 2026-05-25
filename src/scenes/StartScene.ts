@@ -1,14 +1,67 @@
 /**
  * StartScene.ts — Title / splash screen (Scene 0).
  *
- * Shows the thesis title, subtitle, and waits for SPACE to launch
- * the main GameScene.  Generates the initial session seed.
+ * Preloads the main gameplay textures so pressing start switches to the map
+ * immediately instead of waiting for GameScene's loader on the first input.
  */
 import Phaser from 'phaser';
 
+const PLANT_PRELOADS = [
+    { key: 'beat_beet', folder: 'Beat_Beet', filePrefix: 'Beatbeet' },
+    { key: 'crescendo_carrot', folder: 'Crescendo_Carrot', filePrefix: 'CrescendoCarrot' },
+    { key: 'echo_eggplant', folder: 'Echo_Eggplant', filePrefix: 'EchoEggplant' },
+    { key: 'melody_melon', folder: 'Melody_Melon', filePrefix: 'MelodyMelon' },
+    { key: 'rhythm_radish', folder: 'Rhythm_Radish', filePrefix: 'RhythmRadish' },
+    { key: 'treble_turnip', folder: 'Treble_Turnip', filePrefix: 'TrebleTurnip' },
+    { key: 'vinyl_vine', folder: 'Vinyl_Vine', filePrefix: 'VinylVine' },
+];
+
 export class StartScene extends Phaser.Scene {
+    private hasStarted = false;
+
     constructor() {
         super({ key: 'StartScene' });
+    }
+
+    preload(): void {
+        this.load.spritesheet('player', 'assets/sprites/player_spritesheet.png', {
+            frameWidth: 32,
+            frameHeight: 32,
+        });
+
+        // Replaceable outdoor/interior tiles are resolved inside their scenes
+        // with PNG/JPG/JPEG candidates and generated fallbacks. StartScene does
+        // not preload hard-coded tile extensions, so replacing grass.png with
+        // grass.jpg/jpeg will not break startup.
+
+        this.load.image('object-house', '/assets/objects/Main_House.png');
+        this.load.image('object-store', '/assets/objects/Store_Building.png');
+        this.load.image('planter-big', '/assets/sprites/Plants/planter/planter_big.png');
+        this.load.image('planter-small', '/assets/sprites/Plants/planter/planter_small.png');
+
+        for (const plant of PLANT_PRELOADS) {
+            this.load.image(
+                `${plant.key}_stage1`,
+                `/assets/sprites/Plants/plants/${plant.folder}/${plant.filePrefix}_01_Seed.png`
+            );
+            this.load.image(
+                `${plant.key}_stage2`,
+                `/assets/sprites/Plants/plants/${plant.folder}/${plant.filePrefix}_02_Sprout.png`
+            );
+            this.load.image(
+                `${plant.key}_stage3`,
+                `/assets/sprites/Plants/plants/${plant.folder}/${plant.filePrefix}_03_Growing.png`
+            );
+            this.load.image(
+                `${plant.key}_stage4`,
+                `/assets/sprites/Plants/plants/${plant.folder}/${plant.filePrefix}_04_Mature.png`
+            );
+        }
+
+        this.load.image('plant_stage1', '/assets/sprites/Plants/plants/Vinyl_Vine/VinylVine_01_Seed.png');
+        this.load.image('plant_stage2', '/assets/sprites/Plants/plants/Vinyl_Vine/VinylVine_02_Sprout.png');
+        this.load.image('plant_stage3', '/assets/sprites/Plants/plants/Vinyl_Vine/VinylVine_03_Growing.png');
+        this.load.image('plant_stage4', '/assets/sprites/Plants/plants/Vinyl_Vine/VinylVine_04_Mature.png');
     }
 
     create(): void {
@@ -19,7 +72,7 @@ export class StartScene extends Phaser.Scene {
         this.cameras.main.setBackgroundColor('#0a0a1a');
 
         // Title
-        this.add.text(cx, cy - 100, 'Live Drift Audio Demo', {
+        this.add.text(cx, cy - 116, 'Supportive Narrative Demo', {
             fontSize: '36px',
             color: '#66ff88',
             fontFamily: 'monospace',
@@ -27,20 +80,20 @@ export class StartScene extends Phaser.Scene {
         }).setOrigin(0.5);
 
         // Subtitle
-        this.add.text(cx, cy - 50, 'From Live FOH to Game Audio', {
+        this.add.text(cx, cy - 62, 'Mini farming game for research on randomisation in game sound · Player: Daphne', {
             fontSize: '18px',
             color: '#aaaacc',
             fontFamily: 'monospace',
         }).setOrigin(0.5);
 
         // Description
-        this.add.text(cx, cy + 10, [
-            'A research thesis demo comparing:',
+        this.add.text(cx, cy + 18, [
+            'Made for my Supportive Narrative research.',
             '',
-            'Mode A — Classic Random game audio (i.i.d. samples)',
-            'Mode B — Live Drift + Memory (granular, performer-state driven)',
-            '',
-            'Both routed through an Adaptive Live Mixer (FFT + EQ + Compression)',
+            'Mode A — chooses a random sample from a prepared list',
+            '          for example: stone_01, stone_02, stone_03.',
+            'Mode B — uses adaptive continuity and memory',
+            '          so variation follows the performer over time.'
         ].join('\n'), {
             fontSize: '13px',
             color: '#888899',
@@ -50,7 +103,7 @@ export class StartScene extends Phaser.Scene {
         }).setOrigin(0.5);
 
         // Prompt — pulsing
-        const prompt = this.add.text(cx, cy + 160, 'Press SPACE to start', {
+        const prompt = this.add.text(cx, cy + 170, 'Press SPACE / ENTER or click to start', {
             fontSize: '20px',
             color: '#ffffff',
             fontFamily: 'monospace',
@@ -65,9 +118,14 @@ export class StartScene extends Phaser.Scene {
             ease: 'Sine.easeInOut',
         });
 
-        // SPACE → GameScene
-        this.input.keyboard!.once('keydown-SPACE', () => {
-            this.scene.start('GameScene');
-        });
+        this.input.keyboard!.once('keydown-SPACE', () => this.startGame());
+        this.input.keyboard!.once('keydown-ENTER', () => this.startGame());
+        this.input.once('pointerdown', () => this.startGame());
+    }
+
+    private startGame(): void {
+        if (this.hasStarted) return;
+        this.hasStarted = true;
+        this.scene.start('GameScene');
     }
 }
